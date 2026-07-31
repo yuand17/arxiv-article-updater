@@ -5,9 +5,18 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..db import SessionLocal
-from ..models import ApiUsage, Paper, PaperSource, SyncRun, SyncStatus, TrackedAuthor, utcnow
+from ..models import (
+    ApiUsage,
+    JournalSubscription,
+    Paper,
+    PaperSource,
+    SyncRun,
+    SyncStatus,
+    TrackedAuthor,
+    utcnow,
+)
 from ..sources.arxiv import ArxivAdapter
-from ..sources.journals import JournalAdapter
+from ..sources.journals import DEFAULT_JOURNAL_FEEDS, JournalAdapter, JournalFeed
 from ..sources.scholar import ScholarAdapter
 from ..sources.scirate import SciRateAdapter
 from .papers import upsert_paper
@@ -33,7 +42,18 @@ def _build_adapter(db: Session, name: str):
     if name == "arxiv":
         return ArxivAdapter()
     if name == "journals":
-        return JournalAdapter()
+        custom_feeds = db.scalars(
+            select(JournalSubscription).where(JournalSubscription.is_active.is_(True))
+        ).all()
+        feeds = [
+            *DEFAULT_JOURNAL_FEEDS,
+            *[
+                JournalFeed(feed.name, feed.feed_url, feed.issn)
+                for feed in custom_feeds
+                if feed.feed_url not in {default.url for default in DEFAULT_JOURNAL_FEEDS}
+            ],
+        ]
+        return JournalAdapter(feeds=feeds)
     if name == "scirate":
         return SciRateAdapter()
     if name == "scholar":

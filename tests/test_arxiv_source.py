@@ -3,8 +3,10 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
+from arxiv_updater.config import Settings
 from arxiv_updater.services.papers import normalize_doi, normalize_title, upsert_paper
-from arxiv_updater.sources.arxiv import parse_arxiv_feed
+from arxiv_updater.sources.arxiv import ArxivAdapter, parse_arxiv_feed
+from arxiv_updater.sources.cache import DailyResponseCache
 
 FIXTURE = Path(__file__).parent / "fixtures" / "arxiv_feed.xml"
 
@@ -43,3 +45,23 @@ def test_upsert_is_idempotent(app_client):
         assert second.created is False
         assert db.scalar(select(func.count()).select_from(models.Paper)) == 1
         assert db.scalar(select(func.count()).select_from(models.PaperSource)) == 1
+
+
+def test_arxiv_adapter_uses_daily_page_cache(tmp_path):
+    cache = DailyResponseCache("arxiv-test", tmp_path)
+    query = "cat:quant-ph"
+    cache.put(f"{query}|0|1", FIXTURE.read_text(encoding="utf-8"))
+    cache.put(
+        f"{query}|1|1",
+        '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>',
+    )
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        max_results=2,
+        page_size=1,
+        cache=cache,
+    )
+
+    papers = adapter.fetch()
+
+    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]

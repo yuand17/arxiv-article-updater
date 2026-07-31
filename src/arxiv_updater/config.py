@@ -1,3 +1,4 @@
+import ipaddress
 from functools import lru_cache
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-v4-flash"
     llm_monthly_token_budget: int = 5_000_000
     summary_user_weekly_limit: int = 50
+    source_cache_dir: str = "data/cache"
 
     arxiv_categories: list[str] = Field(
         default_factory=lambda: [
@@ -45,11 +47,20 @@ class Settings(BaseSettings):
     def ensure_local_directories(self) -> None:
         if self.database_url.startswith("sqlite"):
             Path("data").mkdir(parents=True, exist_ok=True)
+        Path(self.source_cache_dir).mkdir(parents=True, exist_ok=True)
 
+    def allows_dev_auto_login_for(self, hostname: str | None) -> bool:
+        if not (self.is_development and self.local_dev_auto_login and hostname):
+            return False
+        if hostname.lower() == "localhost":
+            return True
+        try:
+            return ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            return False
 
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     settings.ensure_local_directories()
     return settings
-

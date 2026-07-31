@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
-from dateutil.parser import isoparse  # type: ignore[import-untyped]
+from dateutil.parser import isoparse
 
 from .base import PaperCandidate, SourceAdapter
 

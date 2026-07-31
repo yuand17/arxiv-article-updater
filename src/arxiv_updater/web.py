@@ -1,5 +1,8 @@
+import ipaddress
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -23,6 +26,7 @@ from .models import (
     ApiUsage,
     AuthorFollow,
     InteractionKind,
+    JournalSubscription,
     Paper,
     SyncRun,
     TrackedAuthor,
@@ -49,9 +53,15 @@ def source_label(source: str, metadata: dict) -> str:
 templates.env.globals["source_label"] = source_label
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="arXiv 智能文章更新器")
+    app = FastAPI(title="arXiv 智能文章更新器", lifespan=lifespan)
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.app_secret_key,
@@ -59,10 +69,6 @@ def create_app() -> FastAPI:
         https_only=settings.base_url.startswith("https://"),
     )
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
-
-    @app.on_event("startup")
-    def startup() -> None:
-        init_db()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -130,7 +136,7 @@ def create_app() -> FastAPI:
     ) -> Response:
         settings = get_settings()
         user_id = request.session.get("user_id")
-        if not user_id and settings.is_development and settings.local_dev_auto_login:
+        if not user_id and settings.allows_dev_auto_login_for(request.url.hostname):
             user = db.scalar(select(User).where(User.email == "local@localhost"))
             if user:
                 request.session["user_id"] = user.id
@@ -310,7 +316,9 @@ def create_app() -> FastAPI:
         return RedirectResponse("/settings", status_code=303)
 
     @app.get("/admin", response_class=HTMLResponse)
-    def admin_page(request: Request, db: DbSession) -> Response:
+    def admin_page(
+        request: Request, db: DbSession, journal_error: str = Query("")
+    ) -> Response:
         user = get_current_user(request, db)
         require_admin(user)
         latest_runs = db.scalars(
@@ -323,11 +331,66 @@ def create_app() -> FastAPI:
                 func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
             ).group_by(ApiUsage.service)
         ).all()
+        journal_feeds = db.scalars(
+            select(JournalSubscription).order_by(JournalSubscription.name)
+        ).all()
         return templates.TemplateResponse(
             request,
             "admin.html",
-            {"user": user, "runs": latest_runs, "usage": usage, "invite_url": None},
+            {
+                "user": user,
+                "runs": latest_runs,
+                "usage": usage,
+                "invite_url": None,
+                "journal_feeds": journal_feeds,
+                "journal_error": journal_error,
+            },
         )
+
+    @app.post("/admin/journals")
+    def admin_add_journal(
+        request: Request,
+        db: DbSession,
+        name: str = Form(),
+        feed_url: str = Form(),
+        issn: str = Form(""),
+    ) -> Response:
+        user = get_current_user(request, db)
+        require_admin(user)
+        parsed = urlparse(feed_url.strip())
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            return RedirectResponse("/admin?journal_error=https", status_code=303)
+        if parsed.hostname.lower() in {"localhost", "localhost.localdomain"}:
+            return RedirectResponse("/admin?journal_error=host", status_code=303)
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+        except ValueError:
+            address = None
+        if address and not address.is_global:
+            return RedirectResponse("/admin?journal_error=host", status_code=303)
+        exists = db.scalar(
+            select(JournalSubscription).where(JournalSubscription.feed_url == feed_url.strip())
+        )
+        if not exists:
+            db.add(
+                JournalSubscription(
+                    name=name.strip() or parsed.hostname,
+                    feed_url=feed_url.strip(),
+                    issn=issn.strip(),
+                )
+            )
+            db.commit()
+        return RedirectResponse("/admin", status_code=303)
+
+    @app.post("/admin/journals/{feed_id}/delete")
+    def admin_delete_journal(request: Request, feed_id: str, db: DbSession) -> Response:
+        user = get_current_user(request, db)
+        require_admin(user)
+        feed = db.get(JournalSubscription, feed_id)
+        if feed:
+            db.delete(feed)
+            db.commit()
+        return RedirectResponse("/admin", status_code=303)
 
     @app.post("/admin/invites", response_class=HTMLResponse)
     def admin_invite(request: Request, db: DbSession) -> Response:
@@ -342,6 +405,9 @@ def create_app() -> FastAPI:
                 func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
             ).group_by(ApiUsage.service)
         ).all()
+        journal_feeds = db.scalars(
+            select(JournalSubscription).order_by(JournalSubscription.name)
+        ).all()
         return templates.TemplateResponse(
             request,
             "admin.html",
@@ -350,6 +416,8 @@ def create_app() -> FastAPI:
                 "runs": runs,
                 "usage": usage,
                 "invite_url": f"{get_settings().base_url}/register?invite={token}",
+                "journal_feeds": journal_feeds,
+                "journal_error": "",
             },
         )
 

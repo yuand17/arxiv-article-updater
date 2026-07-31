@@ -1,0 +1,63 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: arxiv_updater
+      POSTGRES_USER: arxiv
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arxiv -d arxiv_updater"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build: .
+    restart: "no"
+    command: ["arxiv-updater", "migrate-db"]
+    environment: &app-environment
+      APP_ENV: production
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?set APP_SECRET_KEY in .env}
+      DATABASE_URL: postgresql+psycopg://arxiv:${POSTGRES_PASSWORD}@db:5432/arxiv_updater
+      BASE_URL: ${BASE_URL:-http://127.0.0.1:8000}
+      TIMEZONE: ${TIMEZONE:-Asia/Shanghai}
+      LOCAL_DEV_AUTO_LOGIN: "false"
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      SERPAPI_MONTHLY_QUERY_BUDGET: ${SERPAPI_MONTHLY_QUERY_BUDGET:-240}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_MONTHLY_TOKEN_BUDGET: ${LLM_MONTHLY_TOKEN_BUDGET:-5000000}
+      SUMMARY_USER_WEEKLY_LIMIT: ${SUMMARY_USER_WEEKLY_LIMIT:-50}
+      SOURCE_CACHE_DIR: /app/data/cache
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: .
+    restart: unless-stopped
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["arxiv-updater", "worker"]
+    environment: *app-environment
+    volumes:
+      - source-cache:/app/data/cache
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  source-cache:

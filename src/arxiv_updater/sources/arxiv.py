@@ -1,12 +1,14 @@
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 
 import httpx
-from dateutil.parser import isoparse  # type: ignore[import-untyped]
+from dateutil.parser import isoparse
 
 from ..config import Settings, get_settings
 from .base import PaperCandidate, SourceAdapter
+from .cache import DailyResponseCache
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
@@ -78,21 +80,31 @@ class ArxivAdapter(SourceAdapter):
         settings: Settings | None = None,
         client: httpx.Client | None = None,
         max_results: int = 500,
+        page_size: int = 100,
+        cache: DailyResponseCache | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
         self.max_results = max_results
+        self.page_size = min(page_size, max_results)
+        self.cache = cache or DailyResponseCache("arxiv")
+        self._last_network_request: float | None = None
 
-    def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
-        category_query = " OR ".join(
-            f"cat:{category}" for category in self.settings.arxiv_categories
-        )
+    def _fetch_page(self, category_query: str, start: int, count: int) -> str:
+        cache_key = f"{category_query}|{start}|{count}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+        if self._last_network_request is not None:
+            elapsed = time.monotonic() - self._last_network_request
+            if elapsed < 3.0:
+                time.sleep(3.0 - elapsed)
         response = self.client.get(
             "https://export.arxiv.org/api/query",
             params={
                 "search_query": category_query,
-                "start": 0,
-                "max_results": self.max_results,
+                "start": start,
+                "max_results": count,
                 "sortBy": "submittedDate",
                 "sortOrder": "descending",
             },
@@ -100,5 +112,38 @@ class ArxivAdapter(SourceAdapter):
                 "User-Agent": "arxiv-article-updater/0.1 (research paper discovery; personal use)"
             },
         )
+        self._last_network_request = time.monotonic()
         response.raise_for_status()
-        return parse_arxiv_feed(response.text, since)
+        self.cache.put(cache_key, response.text)
+        return response.text
+
+    def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
+        category_query = " OR ".join(
+            f"cat:{category}" for category in self.settings.arxiv_categories
+        )
+        candidates: list[PaperCandidate] = []
+        for start in range(0, self.max_results, self.page_size):
+            count = min(self.page_size, self.max_results - start)
+            page = parse_arxiv_feed(self._fetch_page(category_query, start, count))
+            candidates.extend(
+                candidate
+                for candidate in page
+                if not since
+                or max(
+                    candidate.published_at or since,
+                    candidate.updated_at or candidate.published_at or since,
+                )
+                >= since
+            )
+            if len(page) < count:
+                break
+            if since and page and all(
+                max(
+                    candidate.published_at or since,
+                    candidate.updated_at or candidate.published_at or since,
+                )
+                < since
+                for candidate in page
+            ):
+                break
+        return candidates

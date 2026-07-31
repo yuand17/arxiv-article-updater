@@ -134,6 +134,17 @@ class TrackedAuthor(Base):
     followers: Mapped[list["AuthorFollow"]] = relationship(back_populates="author")
 
 
+class JournalSubscription(Base):
+    __tablename__ = "journal_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    feed_url: Mapped[str] = mapped_column(Text, unique=True)
+    issn: Mapped[str] = mapped_column(String(32), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AuthorFollow(Base):
     __tablename__ = "author_follows"
 

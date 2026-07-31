@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+from arxiv_updater.config import Settings
+
 
 def test_health_and_login_redirect(app_client):
     client, _, _ = app_client
@@ -7,6 +9,14 @@ def test_health_and_login_redirect(app_client):
     response = client.get("/", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+def test_development_auto_login_is_loopback_only():
+    settings = Settings(app_env="development", local_dev_auto_login=True)
+    assert settings.allows_dev_auto_login_for("127.0.0.1")
+    assert settings.allows_dev_auto_login_for("::1")
+    assert settings.allows_dev_auto_login_for("localhost")
+    assert not settings.allows_dev_auto_login_for("research-server.internal")
 
 
 def test_invite_registration_and_login(app_client):
@@ -64,4 +74,3 @@ def test_expired_invite_is_rejected(app_client):
     )
     assert response.status_code == 400
     assert "已过期" in response.text
-
