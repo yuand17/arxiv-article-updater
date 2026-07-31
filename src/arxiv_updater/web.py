@@ -29,6 +29,7 @@ from .models import (
     User,
 )
 from .services.interactions import record_interaction, remove_interaction
+from .services.llm import SummaryUnavailableError, generate_summary
 from .services.ranking import rank_papers
 from .sources.scholar import parse_scholar_author_id
 
@@ -173,8 +174,16 @@ def create_app() -> FastAPI:
         if not paper:
             return HTMLResponse("论文不存在", status_code=404)
         record_interaction(db, user.id, paper.id, InteractionKind.INTERESTED)
+        summary_error = None
+        try:
+            summary = generate_summary(db, user, paper)
+        except SummaryUnavailableError as exc:
+            summary = None
+            summary_error = str(exc)
         return templates.TemplateResponse(
-            request, "partials/paper_detail.html", {"paper": paper, "summary": paper.summary}
+            request,
+            "partials/paper_detail.html",
+            {"paper": paper, "summary": summary, "summary_error": summary_error},
         )
 
     @app.post("/papers/{paper_id}/save", response_class=HTMLResponse)
