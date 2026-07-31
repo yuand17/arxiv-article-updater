@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}登录 · arXiv 智能文章更新器{% endblock %}
+{% block body %}
+<main class="auth-shell">
+  <section class="auth-card">
+    <p class="eyebrow">RESEARCH RADAR</p>
+    <h1>登录论文更新器</h1>
+    <p class="muted">组内共享论文库，个人保留自己的阅读偏好。</p>
+    {% if error %}<p class="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/login" class="stack">
+      <label>邮箱<input type="email" name="email" required autocomplete="email"></label>
+      <label>密码<input type="password" name="password" required autocomplete="current-password"></label>
+      <button type="submit">登录</button>
+    </form>
+  </section>
+</main>
+{% endblock %}
+

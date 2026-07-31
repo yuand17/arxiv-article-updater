@@ -1,14 +1,30 @@
-# arXiv 文章更新器
+# arXiv 智能文章更新器
 
-一个用于追踪、筛选和查看 arXiv 最新文章的软件项目。
+一个面向科研小组的轻量论文阅读网页。它把重点作者、SciRate 热门、arXiv 的
+`quant-ph`/`cond-mat` 更新以及 Nature、Nature Physics、PRL 集中到一个可个性化的
+英文论文流中。界面使用中文，论文内容和 AI 总结保持英文。
 
-## 计划功能
+## 本机快速开始
 
-- 按关键词、作者和分类订阅 arXiv 文章
-- 定时获取并展示最新论文
-- 标记已读、收藏和稍后阅读
-- 为论文生成简洁的阅读列表
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
+Copy-Item .env.example .env
+.venv\Scripts\arxiv-updater init-db
+.venv\Scripts\arxiv-updater serve --with-scheduler
+```
 
-## 项目状态
+打开 <http://127.0.0.1:8000>。开发模式默认创建并自动登录本地管理员。
+SerpAPI 和 DeepSeek key 都是可选的；没有 key 时其他数据源和阅读功能仍能使用。
 
-项目刚刚启动，功能与技术方案将在后续迭代中逐步完善。
+## 常用命令
+
+```powershell
+arxiv-updater doctor
+arxiv-updater sync --source arxiv
+arxiv-updater create-admin your@email.example
+arxiv-updater create-invite
+```
+
+详细的本地、数据源和服务器部署说明见 `docs/`。
+

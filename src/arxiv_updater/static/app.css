@@ -1,0 +1,14 @@
+:root { color-scheme: light; font-family: Inter, "Noto Sans SC", system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f2f0e9; color: #17231d; }
+.auth-shell, .placeholder { min-height: 100vh; display: grid; place-items: center; padding: 2rem; }
+.auth-card, .placeholder { width: min(100%, 30rem); background: #fffdf7; border: 1px solid #d7d6cb; border-radius: 18px; padding: 2rem; box-shadow: 0 18px 60px rgba(34, 52, 43, .08); }
+.eyebrow { color: #e45b36; font-size: .72rem; font-weight: 800; letter-spacing: .16em; }
+h1 { font-family: Georgia, serif; font-weight: 500; margin: .4rem 0 1rem; }
+.muted { color: #617068; }
+.stack { display: grid; gap: 1rem; margin-top: 1.5rem; }
+label { display: grid; gap: .45rem; font-size: .88rem; font-weight: 650; }
+input { border: 1px solid #b8c0ba; border-radius: 9px; padding: .75rem; font: inherit; }
+button { border: 0; border-radius: 9px; padding: .8rem 1rem; background: #174f3d; color: white; font: inherit; font-weight: 700; cursor: pointer; }
+.alert { background: #fff0ec; color: #9f311b; border-radius: 8px; padding: .75rem; }
+

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}arXiv 智能文章更新器{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+    <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  </head>
+  <body>
+    {% block body %}{% endblock %}
+  </body>
+</html>
+
