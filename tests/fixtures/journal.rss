@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Example Journal</title>
+    <item>
+      <title>Observation of a coherent quantum effect</title>
+      <link>https://doi.org/10.1103/example.42</link>
+      <guid>doi:10.1103/example.42</guid>
+      <dc:creator>Alice Physicist</dc:creator>
+      <pubDate>Thu, 30 Jul 2026 10:00:00 GMT</pubDate>
+      <description><![CDATA[<p>We report a controlled observation.</p>]]></description>
+    </item>
+    <item>
+      <title>Publisher Correction: Observation of a coherent quantum effect</title>
+      <link>https://doi.org/10.1103/example.43</link>
+    </item>
+  </channel>
+</rss>
+

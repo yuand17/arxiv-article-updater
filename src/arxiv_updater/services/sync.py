@@ -1,12 +1,87 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import SessionLocal
-from ..models import SyncRun, SyncStatus, utcnow
+from ..models import ApiUsage, Paper, PaperSource, SyncRun, SyncStatus, TrackedAuthor, utcnow
 from ..sources.arxiv import ArxivAdapter
+from ..sources.journals import JournalAdapter
+from ..sources.scholar import ScholarAdapter
+from ..sources.scirate import SciRateAdapter
 from .papers import upsert_paper
+
+
+def _month_start() -> datetime:
+    now = datetime.now(UTC)
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _serpapi_queries_this_month(db: Session) -> int:
+    return int(
+        db.scalar(
+            select(func.coalesce(func.sum(ApiUsage.request_count), 0)).where(
+                ApiUsage.service == "serpapi", ApiUsage.created_at >= _month_start()
+            )
+        )
+        or 0
+    )
+
+
+def _build_adapter(db: Session, name: str):
+    if name == "arxiv":
+        return ArxivAdapter()
+    if name == "journals":
+        return JournalAdapter()
+    if name == "scirate":
+        return SciRateAdapter()
+    if name == "scholar":
+        settings = get_settings()
+        used = _serpapi_queries_this_month(db)
+        remaining = max(0, settings.serpapi_monthly_query_budget - used)
+        authors = db.scalars(
+            select(TrackedAuthor)
+            .order_by(TrackedAuthor.last_synced_at.asc().nullsfirst())
+            .limit(remaining)
+        ).all()
+        if not authors:
+            raise RuntimeError("No tracked authors or the SerpAPI monthly budget is exhausted")
+        return ScholarAdapter([author.scholar_author_id for author in authors])
+    raise ValueError(f"Unknown source: {name}")
+
+
+def _apply_scirate(db: Session, adapter: SciRateAdapter) -> tuple[int, int]:
+    sorted_records = sorted(adapter.records, key=lambda item: item.scites_count, reverse=True)
+    hot_ids = {record.arxiv_id for record in sorted_records[:10]}
+    hot_ids.update(record.arxiv_id for record in sorted_records if record.scites_count >= 5)
+    updated = 0
+    for record in sorted_records:
+        paper = db.scalar(select(Paper).where(Paper.arxiv_id == record.arxiv_id))
+        if not paper:
+            continue
+        paper.scites_count = record.scites_count
+        paper.is_scirate_hot = record.arxiv_id in hot_ids
+        source = db.scalar(
+            select(PaperSource).where(
+                PaperSource.source == "scirate", PaperSource.external_id == record.arxiv_id
+            )
+        )
+        if not source:
+            db.add(
+                PaperSource(
+                    paper_id=paper.id,
+                    source="scirate",
+                    external_id=record.arxiv_id,
+                    url=f"https://scirate.com/arxiv/{record.arxiv_id}",
+                    metadata_json={"scites_count": record.scites_count},
+                )
+            )
+        else:
+            source.metadata_json = {"scites_count": record.scites_count}
+            source.last_seen_at = utcnow()
+        updated += 1
+    return len(sorted_records), updated
 
 
 def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
@@ -16,13 +91,6 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
         run = SyncRun(source=name, status=SyncStatus.RUNNING)
         db.add(run)
         db.commit()
-        if name != "arxiv":
-            run.status = SyncStatus.SKIPPED
-            run.error = "adapter not installed yet"
-            run.finished_at = utcnow()
-            db.commit()
-            runs.append(run)
-            continue
         previous = db.scalar(
             select(SyncRun)
             .where(SyncRun.source == name, SyncRun.status == SyncStatus.SUCCESS)
@@ -34,12 +102,33 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
             else datetime.now(UTC) - timedelta(days=14)
         )
         try:
-            candidates = ArxivAdapter().fetch(since)
-            created = 0
-            for candidate in candidates:
-                created += int(upsert_paper(db, candidate).created)
-            run.items_seen = len(candidates)
-            run.items_created = created
+            adapter = _build_adapter(db, name)
+            candidates = adapter.fetch(since)
+            if isinstance(adapter, SciRateAdapter):
+                run.items_seen, run.items_created = _apply_scirate(db, adapter)
+            else:
+                created = 0
+                for candidate in candidates:
+                    created += int(upsert_paper(db, candidate).created)
+                run.items_seen = len(candidates)
+                run.items_created = created
+            if isinstance(adapter, ScholarAdapter):
+                author_map = {
+                    author.scholar_author_id: author
+                    for author in db.scalars(select(TrackedAuthor)).all()
+                }
+                for author_id, name_value in adapter.author_names.items():
+                    author = author_map.get(author_id)
+                    if author:
+                        author.name = name_value
+                        author.last_synced_at = utcnow()
+                db.add(
+                    ApiUsage(
+                        service="serpapi",
+                        operation="author_sync",
+                        request_count=len(adapter.author_ids),
+                    )
+                )
             run.status = SyncStatus.SUCCESS
         except Exception as exc:
             db.rollback()
