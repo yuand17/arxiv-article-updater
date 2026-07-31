@@ -111,15 +111,20 @@ class JournalAdapter(SourceAdapter):
     ) -> None:
         self.feeds = feeds or DEFAULT_JOURNAL_FEEDS
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
+        self.errors: list[str] = []
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         candidates: list[PaperCandidate] = []
         for journal in self.feeds:
-            response = self.client.get(
-                journal.url,
-                headers={"User-Agent": "arxiv-article-updater/0.1 (research feed reader)"},
-            )
-            response.raise_for_status()
+            try:
+                response = self.client.get(
+                    journal.url,
+                    headers={"User-Agent": "arxiv-article-updater/0.1 (research feed reader)"},
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                self.errors.append(f"{journal.name}: {type(exc).__name__}")
+                continue
             for candidate in parse_journal_feed(response.text, journal):
                 published = candidate.published_at
                 if published and not published.tzinfo:
@@ -127,4 +132,6 @@ class JournalAdapter(SourceAdapter):
                 if since and published and published < since:
                     continue
                 candidates.append(candidate)
+        if not candidates and self.errors:
+            raise RuntimeError("; ".join(self.errors))
         return candidates

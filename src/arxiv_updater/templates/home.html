@@ -1,9 +1,65 @@
 {% extends "base.html" %}
+{% set titles = {
+  'weekly': ('本周精选', '为你挑出的最近七天论文'),
+  'all': ('全部更新', '最近三十天进入论文库的内容'),
+  'authors': ('重点作者', '来自你关注的 Google Scholar 作者'),
+  'scirate': ('SciRate 热门', '量子物理社区正在关注的论文'),
+  'arxiv': ('arXiv 更新', 'quant-ph 与全部 condensed matter 分类'),
+  'journals': ('重点期刊', 'Nature、Nature Physics 与 PRL'),
+  'saved': ('我的收藏', '留给之后认真阅读的论文')
+} %}
 {% block body %}
-<main class="placeholder">
-  <p class="eyebrow">FOUNDATION READY</p>
-  <h1>你好，{{ user.display_name }}</h1>
-  <p>论文数据源和本周精选将在下一个版本切片中接入。</p>
-</main>
-{% endblock %}
+<div class="app-shell">
+  <aside class="sidebar">
+    <p class="section-label">阅读视图</p>
+    <nav class="side-nav">
+      <a class="{{ 'active' if view == 'weekly' }}" href="/?view=weekly">本周精选 <span>20</span></a>
+      <a class="{{ 'active' if view == 'all' }}" href="/?view=all">全部更新</a>
+      <a class="{{ 'active' if view == 'authors' }}" href="/?view=authors">重点作者</a>
+      <a class="{{ 'active' if view == 'scirate' }}" href="/?view=scirate">SciRate 热门</a>
+      <a class="{{ 'active' if view == 'arxiv' }}" href="/?view=arxiv">arXiv</a>
+      <a class="{{ 'active' if view == 'journals' }}" href="/?view=journals">重点期刊</a>
+      <a class="{{ 'active' if view == 'saved' }}" href="/?view=saved">收藏</a>
+    </nav>
+    <div class="sidebar-note">
+      <strong>排序会逐渐适应你</strong>
+      <p>“感兴趣”、收藏和阅读全文会提高相近主题的优先级；“不感兴趣”会降低它们。</p>
+    </div>
+  </aside>
 
+  <main class="feed-main">
+    <section class="feed-header">
+      <div>
+        <p class="eyebrow">PERSONALIZED PAPER FEED</p>
+        <h1>{{ titles[view][0] }}</h1>
+        <p>{{ titles[view][1] }}</p>
+      </div>
+      <div class="result-count"><strong>{{ ranked|length }}</strong><span>篇论文</span></div>
+    </section>
+
+    <form class="filter-bar" method="get" action="/">
+      <input type="hidden" name="view" value="{{ view }}">
+      <label class="search-box"><span>⌕</span><input name="q" value="{{ q }}" placeholder="搜索英文标题或作者"></label>
+      <select name="category" aria-label="按分类筛选">
+        <option value="">全部分类</option>
+        {% for item in categories %}<option value="{{ item }}" {{ 'selected' if item == category }}>{{ item }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="secondary-button">筛选</button>
+    </form>
+
+    <section class="paper-list" aria-live="polite">
+      {% for item in ranked %}
+        {% set paper_index = loop.index %}
+        {% include "partials/paper_card.html" %}
+      {% else %}
+      <div class="empty-state">
+        <span class="empty-orbit">Q</span>
+        <h2>这个视图暂时没有论文</h2>
+        <p>先在“设置”中填写研究兴趣、关注作者，或运行一次数据同步。</p>
+        <a class="primary-link" href="/settings">打开设置</a>
+      </div>
+      {% endfor %}
+    </section>
+  </main>
+</div>
+{% endblock %}

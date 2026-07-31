@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}设置 · Research Radar{% endblock %}
+{% block body %}
+<main class="settings-shell">
+  <header class="page-heading">
+    <p class="eyebrow">PERSONALIZATION</p>
+    <h1>你的研究雷达</h1>
+    <p>用英文描述兴趣并关注 Scholar 作者。论文库共享，但这些偏好只属于你。</p>
+  </header>
+  <div class="settings-grid">
+    <section class="settings-card">
+      <span class="step-number">01</span>
+      <h2>研究兴趣</h2>
+      <p>输入英文关键词或一小段研究方向描述，排序器会匹配标题和 abstract。</p>
+      {% if saved %}<p class="success-note">已保存，后续排序会使用新偏好。</p>{% endif %}
+      <form method="post" action="/settings" class="stack">
+        <textarea name="interests" rows="7" placeholder="quantum error correction, tensor networks, topological phases...">{{ user.interests }}</textarea>
+        <button type="submit">保存兴趣</button>
+      </form>
+    </section>
+    <section class="settings-card">
+      <span class="step-number">02</span>
+      <h2>Google Scholar 重点作者</h2>
+      <p>粘贴公开作者主页链接；系统按全组去重后计入 SerpAPI 额度。</p>
+      <form method="post" action="/settings/authors" class="inline-form">
+        <input type="url" name="profile_url" required placeholder="https://scholar.google.com/citations?user=...">
+        <button type="submit">关注</button>
+      </form>
+      <div class="follow-list">
+        {% for follow in follows %}
+        <div><span><strong>{{ follow.author.name }}</strong><small>{{ follow.author.scholar_author_id }}</small></span><form method="post" action="/settings/authors/{{ follow.id }}/delete"><button class="text-button">移除</button></form></div>
+        {% else %}<p class="muted">还没有关注作者。</p>{% endfor %}
+      </div>
+    </section>
+  </div>
+</main>
+{% endblock %}
+

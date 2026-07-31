@@ -1,0 +1,31 @@
+<article class="paper-card" id="paper-{{ item.paper.id }}">
+  <div class="paper-index">{{ "%02d"|format(paper_index) }}</div>
+  <div class="paper-content">
+    <div class="paper-meta">
+      {% for source in item.paper.sources %}
+        <span class="source-tag source-{{ source.source }}">{{ source_label(source.source, source.metadata_json) }}</span>
+      {% endfor %}
+      {% for cat in item.paper.categories[:2] %}<span class="category-tag">{{ cat }}</span>{% endfor %}
+      {% if item.paper.scites_count %}<span class="scirate-score">▲ {{ item.paper.scites_count }}</span>{% endif %}
+      <time>{{ (item.paper.published_at or item.paper.discovered_at).strftime('%Y-%m-%d') }}</time>
+    </div>
+    <h2>{{ item.paper.title }}</h2>
+    <p class="authors">{{ item.paper.authors_text or 'Authors unavailable' }}</p>
+    <div class="reason-row">
+      <span>推荐原因</span>
+      {% for reason in item.reasons %}<strong>{{ reason }}</strong>{% endfor %}
+      <small>{{ "%.1f"|format(item.score) }}</small>
+    </div>
+    <div id="detail-{{ item.paper.id }}" class="paper-detail"></div>
+    <div class="paper-actions">
+      <button class="interest-button" hx-post="/papers/{{ item.paper.id }}/interested" hx-target="#detail-{{ item.paper.id }}" hx-swap="innerHTML" hx-indicator="#loading-{{ item.paper.id }}">
+        <span>✦</span> 感兴趣 · 查看总结
+      </button>
+      <span id="loading-{{ item.paper.id }}" class="htmx-indicator loading">正在准备…</span>
+      {% set saved = 'saved' in item.interaction_kinds %}
+      {% set paper_id = item.paper.id %}
+      {% include "partials/save_button.html" with context %}
+      <button class="quiet-button" hx-post="/papers/{{ item.paper.id }}/dismiss" hx-target="#paper-{{ item.paper.id }}" hx-swap="outerHTML">不感兴趣</button>
+    </div>
+  </div>
+</article>

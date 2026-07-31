@@ -8,7 +8,22 @@
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   </head>
   <body>
+    {% if user %}
+    <header class="topbar">
+      <a class="brand" href="/"><span>Q</span> Research Radar</a>
+      <nav class="desktop-nav" aria-label="主要导航">
+        <a href="/?view=weekly">本周精选</a>
+        <a href="/?view=all">全部更新</a>
+        <a href="/?view=saved">收藏</a>
+        <a href="/settings">设置</a>
+        {% if user.role.value == 'admin' %}<a href="/admin">管理</a>{% endif %}
+      </nav>
+      <div class="user-menu">
+        <span>{{ user.display_name }}</span>
+        <form method="post" action="/logout"><button class="text-button">退出</button></form>
+      </div>
+    </header>
+    {% endif %}
     {% block body %}{% endblock %}
   </body>
 </html>
-

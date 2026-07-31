@@ -24,7 +24,6 @@ dependencies = [
   "python-dateutil>=2.9,<3",
   "python-multipart>=0.0.20,<1",
   "rapidfuzz>=3.12,<4",
-  "scikit-learn>=1.6,<2",
   "sqlalchemy>=2.0,<3",
   "typer>=0.15,<1",
   "uvicorn[standard]>=0.34,<1",
@@ -60,4 +59,3 @@ python_version = "3.12"
 packages = ["arxiv_updater"]
 ignore_missing_imports = true
 warn_unused_ignores = true
-

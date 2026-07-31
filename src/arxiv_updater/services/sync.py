@@ -112,6 +112,8 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
                     created += int(upsert_paper(db, candidate).created)
                 run.items_seen = len(candidates)
                 run.items_created = created
+            if isinstance(adapter, JournalAdapter) and adapter.errors:
+                run.error = "Partial sync: " + "; ".join(adapter.errors)
             if isinstance(adapter, ScholarAdapter):
                 author_map = {
                     author.scholar_author_id: author

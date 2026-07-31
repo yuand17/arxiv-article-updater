@@ -97,6 +97,7 @@ class ScholarAdapter(SourceAdapter):
                 raise RuntimeError(str(payload["error"]))
             name, candidates = parse_scholar_response(payload)
             self.author_names[author_id] = name
+            for candidate in candidates:
+                candidate.metadata["tracked_author_id"] = author_id
             results.extend(candidates)
         return results
-
