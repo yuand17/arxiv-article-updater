@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}设置 · Research Radar{% endblock %}
+{% block title %}设置 · arXiv Updater{% endblock %}
 {% block body %}
-<main class="settings-shell">
+<main class="settings-shell{% if user.role.value == 'admin' %} wide{% endif %}">
   <header class="page-heading">
-    <p class="eyebrow">PERSONALIZATION</p>
-    <h1>你的研究雷达</h1>
-    <p>用英文描述兴趣并关注 Scholar 作者。论文库共享，但这些偏好只属于你。</p>
+    <p class="eyebrow">PREFERENCES</p>
+    <h1>设置</h1>
+    <p>管理你的研究兴趣与重点作者。管理员还可以在这里配置数据源并查看系统状态。</p>
   </header>
   <div class="settings-grid">
     <section class="settings-card">
@@ -33,6 +33,45 @@
       </div>
     </section>
   </div>
+  {% if user.role.value == 'admin' %}
+  <section class="admin-settings" id="system">
+    <header class="admin-settings-heading">
+      <p class="eyebrow">SYSTEM HEALTH</p>
+      <h2>系统与数据源</h2>
+      <p>外部来源失败不会影响已有论文的浏览。</p>
+    </header>
+    <div class="admin-grid">
+      <div class="settings-card">
+        <h2>成员邀请</h2>
+        <form method="post" action="/admin/invites"><button>生成 7 天邀请码</button></form>
+        {% if invite_url %}<label class="invite-result">邀请链接<input value="{{ invite_url }}" readonly onclick="this.select()"></label>{% endif %}
+      </div>
+      <div class="settings-card">
+        <h2>API 用量</h2>
+        {% for service, requests, tokens in usage %}<div class="metric-row"><strong>{{ service }}</strong><span>{{ requests or 0 }} requests</span><span>{{ tokens or 0 }} tokens</span></div>{% else %}<p class="muted">尚未产生外部 API 用量。</p>{% endfor %}
+      </div>
+    </div>
+    <section class="settings-card">
+      <h2>自定义期刊源</h2>
+      <p class="muted">默认已包含 Nature、Nature Physics 和 Physical Review Letters。</p>
+      {% if journal_error %}<p class="error">RSS/Atom 地址必须是公开的 HTTPS URL。</p>{% endif %}
+      <form method="post" action="/admin/journals" class="inline-form">
+        <label>期刊名称<input name="name" required placeholder="例如 Science"></label>
+        <label>RSS / Atom URL<input name="feed_url" type="url" required placeholder="https://example.org/feed.xml"></label>
+        <label>ISSN（可选）<input name="issn" placeholder="1234-5678"></label>
+        <button>添加来源</button>
+      </form>
+      {% for feed in journal_feeds %}
+        <div class="follow-row"><div><strong>{{ feed.name }}</strong><small>{{ feed.feed_url }}{% if feed.issn %} · {{ feed.issn }}{% endif %}</small></div><form method="post" action="/admin/journals/{{ feed.id }}/delete"><button class="danger">删除</button></form></div>
+      {% endfor %}
+    </section>
+    <section class="settings-card status-table">
+      <h2>最近同步</h2>
+      <table><thead><tr><th>来源</th><th>状态</th><th>新增/读取</th><th>开始时间</th><th>信息</th></tr></thead><tbody>
+        {% for run in runs %}<tr><td>{{ run.source }}</td><td><span class="status status-{{ run.status.value }}">{{ run.status.value }}</span></td><td>{{ run.items_created }}/{{ run.items_seen }}</td><td>{{ run.started_at.strftime('%m-%d %H:%M') }}</td><td>{{ run.error or '—' }}</td></tr>{% else %}<tr><td colspan="5">还没有同步记录。</td></tr>{% endfor %}
+      </tbody></table>
+    </section>
+  </section>
+  {% endif %}
 </main>
 {% endblock %}
-

@@ -36,6 +36,15 @@ def test_admin_can_add_only_https_journal_feeds(app_client):
         data={"email": "feeds-admin@example.com", "password": "a-strong-password"},
     )
 
+    settings_response = client.get("/settings")
+    assert settings_response.status_code == 200
+    assert "系统与数据源" in settings_response.text
+    assert 'href="/admin"' not in settings_response.text
+
+    admin_response = client.get("/admin", follow_redirects=False)
+    assert admin_response.status_code == 303
+    assert admin_response.headers["location"] == "/settings#system"
+
     response = client.post(
         "/admin/journals",
         data={"name": "Unsafe", "feed_url": "http://localhost/feed", "issn": ""},

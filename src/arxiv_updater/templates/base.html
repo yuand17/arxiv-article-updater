@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}arXiv 智能文章更新器{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=20260804-brand">
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=20260804-settings">
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   </head>
   <body>
@@ -19,7 +19,6 @@
         <a href="/?view=all">全部更新</a>
         <a href="/?view=saved">收藏</a>
         <a href="/settings">设置</a>
-        {% if user.role.value == 'admin' %}<a href="/admin">管理</a>{% endif %}
       </nav>
       <div class="user-menu">
         <span>{{ user.display_name }}</span>

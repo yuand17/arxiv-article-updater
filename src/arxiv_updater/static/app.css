@@ -77,6 +77,10 @@ input:focus,select:focus,textarea:focus { outline:2px solid #9ebcaf; outline-off
 .settings-shell { width:min(1100px,calc(100% - 2rem)); margin:0 auto; padding:3.5rem 0 6rem; }
 .settings-shell.wide { width:min(1300px,calc(100% - 2rem)); }
 .page-heading { border-bottom:1px solid var(--line); padding-bottom:1.8rem; }
+.admin-settings { display:grid; gap:1.2rem; margin-top:3.5rem; }
+.admin-settings-heading { border-top:1px solid var(--line); padding-top:2.5rem; }
+.admin-settings-heading h2 { font:500 clamp(1.8rem,3vw,2.5rem) Georgia,"Noto Serif SC",serif; margin:0; letter-spacing:-.025em; }
+.admin-settings-heading p:not(.eyebrow) { color:var(--muted); margin:.55rem 0 0; }
 .settings-grid,.admin-grid { display:grid; grid-template-columns:1fr 1fr; gap:1.2rem; margin-top:1.5rem; }
 .settings-card { position:relative; background:var(--paper); border:1px solid var(--line); border-radius:14px; padding:1.5rem; }
 .settings-card h2 { margin:.1rem 0 .5rem; font-size:1.35rem; }

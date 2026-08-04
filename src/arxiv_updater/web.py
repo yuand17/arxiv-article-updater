@@ -31,6 +31,7 @@ from .models import (
     SyncRun,
     TrackedAuthor,
     User,
+    UserRole,
 )
 from .services.interactions import record_interaction, remove_interaction
 from .services.llm import SummaryUnavailableError, generate_summary
@@ -51,6 +52,48 @@ def source_label(source: str, metadata: dict) -> str:
 
 
 templates.env.globals["source_label"] = source_label
+
+
+def settings_context(
+    db: Session,
+    user: User,
+    *,
+    saved: bool = False,
+    invite_url: str | None = None,
+    journal_error: str = "",
+) -> dict[str, object]:
+    context: dict[str, object] = {
+        "user": user,
+        "follows": db.scalars(
+            select(AuthorFollow)
+            .options(selectinload(AuthorFollow.author))
+            .where(AuthorFollow.user_id == user.id)
+            .order_by(AuthorFollow.created_at.desc())
+        ).all(),
+        "error": None,
+        "saved": saved,
+    }
+    if user.role == UserRole.ADMIN:
+        context.update(
+            {
+                "runs": db.scalars(
+                    select(SyncRun).order_by(SyncRun.started_at.desc()).limit(20)
+                ).all(),
+                "usage": db.execute(
+                    select(
+                        ApiUsage.service,
+                        func.sum(ApiUsage.request_count),
+                        func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
+                    ).group_by(ApiUsage.service)
+                ).all(),
+                "invite_url": invite_url,
+                "journal_feeds": db.scalars(
+                    select(JournalSubscription).order_by(JournalSubscription.name)
+                ).all(),
+                "journal_error": journal_error,
+            }
+        )
+    return context
 
 
 @asynccontextmanager
@@ -235,18 +278,14 @@ def create_app() -> FastAPI:
         return RedirectResponse(target, status_code=303)
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, db: DbSession) -> Response:
+    def settings_page(
+        request: Request, db: DbSession, journal_error: str = Query("")
+    ) -> Response:
         user = get_current_user(request, db)
-        follows = db.scalars(
-            select(AuthorFollow)
-            .options(selectinload(AuthorFollow.author))
-            .where(AuthorFollow.user_id == user.id)
-            .order_by(AuthorFollow.created_at.desc())
-        ).all()
         return templates.TemplateResponse(
             request,
             "settings.html",
-            {"user": user, "follows": follows, "error": None, "saved": False},
+            settings_context(db, user, journal_error=journal_error),
         )
 
     @app.post("/settings", response_class=HTMLResponse)
@@ -254,15 +293,10 @@ def create_app() -> FastAPI:
         user = get_current_user(request, db)
         user.interests = interests.strip()
         db.commit()
-        follows = db.scalars(
-            select(AuthorFollow)
-            .options(selectinload(AuthorFollow.author))
-            .where(AuthorFollow.user_id == user.id)
-        ).all()
         return templates.TemplateResponse(
             request,
             "settings.html",
-            {"user": user, "follows": follows, "error": None, "saved": True},
+            settings_context(db, user, saved=True),
         )
 
     @app.post("/settings/authors")
@@ -315,37 +349,11 @@ def create_app() -> FastAPI:
             db.commit()
         return RedirectResponse("/settings", status_code=303)
 
-    @app.get("/admin", response_class=HTMLResponse)
-    def admin_page(
-        request: Request, db: DbSession, journal_error: str = Query("")
-    ) -> Response:
+    @app.get("/admin")
+    def admin_page(request: Request, db: DbSession) -> Response:
         user = get_current_user(request, db)
         require_admin(user)
-        latest_runs = db.scalars(
-            select(SyncRun).order_by(SyncRun.started_at.desc()).limit(20)
-        ).all()
-        usage = db.execute(
-            select(
-                ApiUsage.service,
-                func.sum(ApiUsage.request_count),
-                func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
-            ).group_by(ApiUsage.service)
-        ).all()
-        journal_feeds = db.scalars(
-            select(JournalSubscription).order_by(JournalSubscription.name)
-        ).all()
-        return templates.TemplateResponse(
-            request,
-            "admin.html",
-            {
-                "user": user,
-                "runs": latest_runs,
-                "usage": usage,
-                "invite_url": None,
-                "journal_feeds": journal_feeds,
-                "journal_error": journal_error,
-            },
-        )
+        return RedirectResponse("/settings#system", status_code=303)
 
     @app.post("/admin/journals")
     def admin_add_journal(
@@ -359,15 +367,15 @@ def create_app() -> FastAPI:
         require_admin(user)
         parsed = urlparse(feed_url.strip())
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-            return RedirectResponse("/admin?journal_error=https", status_code=303)
+            return RedirectResponse("/settings?journal_error=https#system", status_code=303)
         if parsed.hostname.lower() in {"localhost", "localhost.localdomain"}:
-            return RedirectResponse("/admin?journal_error=host", status_code=303)
+            return RedirectResponse("/settings?journal_error=host#system", status_code=303)
         try:
             address = ipaddress.ip_address(parsed.hostname)
         except ValueError:
             address = None
         if address and not address.is_global:
-            return RedirectResponse("/admin?journal_error=host", status_code=303)
+            return RedirectResponse("/settings?journal_error=host#system", status_code=303)
         exists = db.scalar(
             select(JournalSubscription).where(JournalSubscription.feed_url == feed_url.strip())
         )
@@ -380,7 +388,7 @@ def create_app() -> FastAPI:
                 )
             )
             db.commit()
-        return RedirectResponse("/admin", status_code=303)
+        return RedirectResponse("/settings#system", status_code=303)
 
     @app.post("/admin/journals/{feed_id}/delete")
     def admin_delete_journal(request: Request, feed_id: str, db: DbSession) -> Response:
@@ -390,35 +398,21 @@ def create_app() -> FastAPI:
         if feed:
             db.delete(feed)
             db.commit()
-        return RedirectResponse("/admin", status_code=303)
+        return RedirectResponse("/settings#system", status_code=303)
 
     @app.post("/admin/invites", response_class=HTMLResponse)
     def admin_invite(request: Request, db: DbSession) -> Response:
         user = get_current_user(request, db)
         require_admin(user)
         token = create_invite(db, user.id)
-        runs = db.scalars(select(SyncRun).order_by(SyncRun.started_at.desc()).limit(20)).all()
-        usage = db.execute(
-            select(
-                ApiUsage.service,
-                func.sum(ApiUsage.request_count),
-                func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
-            ).group_by(ApiUsage.service)
-        ).all()
-        journal_feeds = db.scalars(
-            select(JournalSubscription).order_by(JournalSubscription.name)
-        ).all()
         return templates.TemplateResponse(
             request,
-            "admin.html",
-            {
-                "user": user,
-                "runs": runs,
-                "usage": usage,
-                "invite_url": f"{get_settings().base_url}/register?invite={token}",
-                "journal_feeds": journal_feeds,
-                "journal_error": "",
-            },
+            "settings.html",
+            settings_context(
+                db,
+                user,
+                invite_url=f"{get_settings().base_url}/register?invite={token}",
+            ),
         )
 
     return app
