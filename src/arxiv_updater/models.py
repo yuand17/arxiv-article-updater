@@ -187,7 +187,6 @@ class PaperSummary(Base):
     tldr: Mapped[str] = mapped_column(Text)
     contributions: Mapped[list[str]] = mapped_column(JSON, default=list)
     methods: Mapped[str] = mapped_column(Text, default="")
-    limitations: Mapped[str] = mapped_column(Text, default="")
     model: Mapped[str] = mapped_column(String(120))
     prompt_version: Mapped[str] = mapped_column(String(30), default="v1")
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)

@@ -29,7 +29,6 @@ class FakeProvider(LLMProvider):
                 tldr=f"This paper studies {paper.title}.",
                 contributions=["Introduces a testable method.", "Reports a benchmark."],
                 methods="The abstract describes a numerical comparison.",
-                limitations="Not stated in the abstract.",
             ),
             model="fake-summary-model",
             input_tokens=120,
@@ -120,7 +119,6 @@ def test_deepseek_v4_summary_disables_thinking_by_default():
     result = provider.summarize(_provider_paper())
 
     assert result.content.tldr == "A result."
-    assert result.content.limitations == ""
     assert "limitations" not in stub.kwargs["messages"][1]["content"]
     assert stub.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 

@@ -7,7 +7,6 @@
       <ul>{% for contribution in summary.contributions %}<li>{{ contribution }}</li>{% endfor %}</ul>
     {% endif %}
     {% if summary.methods %}<p><strong>Methods</strong><br>{{ summary.methods }}</p>{% endif %}
-    <p><strong>Limitations</strong><br>{{ summary.limitations }}</p>
   {% elif summary_error %}
     <p class="error">{{ summary_error }}</p>
     <button class="secondary" hx-post="/papers/{{ paper.id }}/interested" hx-target="#detail-{{ paper.id }}" hx-swap="innerHTML">重试</button>

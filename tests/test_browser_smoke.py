@@ -41,7 +41,6 @@ def test_registration_feed_actions_and_mobile_layout(app_client):
                 tldr="This paper presents a browser-tested quantum method.",
                 contributions=["Presents a method."],
                 methods="A method is described in the abstract.",
-                limitations="Not stated in the abstract.",
                 model="fixture",
             )
         )

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings, get_settings
 from ..models import ApiUsage, Paper, PaperSummary, User
 
-PROMPT_VERSION = "v3"
+PROMPT_VERSION = "v4"
 
 
 class SummaryUnavailableError(RuntimeError):
@@ -26,7 +26,6 @@ class SummaryContent(BaseModel):
     tldr: str = Field(min_length=1)
     contributions: list[str] = Field(default_factory=list, max_length=3)
     methods: str = ""
-    limitations: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,7 +169,6 @@ def generate_summary(
         tldr=result.content.tldr,
         contributions=result.content.contributions[:3],
         methods=result.content.methods,
-        limitations=result.content.limitations or "Not stated in the abstract.",
         model=result.model,
         prompt_version=PROMPT_VERSION,
         input_tokens=result.input_tokens,
