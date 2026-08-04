@@ -113,13 +113,15 @@ def test_summary_is_shared_cached_and_usage_is_counted_once(app_client):
 def test_deepseek_v4_summary_disables_thinking_by_default():
     stub = StubCompletions(
         '{"tldr":"A result.","contributions":["One."],'
-        '"methods":"A method.","limitations":"Not stated in the abstract."}'
+        '"methods":"A method."}'
     )
     provider = _provider_with_stub(stub)
 
     result = provider.summarize(_provider_paper())
 
     assert result.content.tldr == "A result."
+    assert result.content.limitations == ""
+    assert "limitations" not in stub.kwargs["messages"][1]["content"]
     assert stub.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
 

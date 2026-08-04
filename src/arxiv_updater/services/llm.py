@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings, get_settings
 from ..models import ApiUsage, Paper, PaperSummary, User
 
-PROMPT_VERSION = "v2"
+PROMPT_VERSION = "v3"
 
 
 class SummaryUnavailableError(RuntimeError):
@@ -57,10 +57,8 @@ class OpenAICompatibleProvider(LLMProvider):
         prompt = (
             "Summarize the research paper below using only facts explicitly visible in its "
             "title and abstract. Return valid JSON with exactly these fields: tldr (one English "
-            "sentence), contributions (an array of at most three concise English strings), "
-            "methods (a concise English overview), and limitations (limitations visible in the "
-            "abstract, or 'Not stated in the abstract.'). Do not infer missing results, methods, "
-            "or limitations.\n\n"
+            "sentence), contributions (an array of at most three concise English strings), and "
+            "methods (a concise English overview). Do not infer missing results or methods.\n\n"
             f"Title: {paper.title}\n\nAbstract: {paper.abstract}"
         )
         extra_body = None
