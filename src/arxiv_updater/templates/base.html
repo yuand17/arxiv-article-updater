@@ -4,13 +4,16 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}arXiv 智能文章更新器{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=20260804-brand">
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   </head>
   <body>
     {% if user %}
     <header class="topbar">
-      <a class="brand" href="/"><span>Q</span> Research Radar</a>
+      <a class="brand" href="/" aria-label="arXiv Updater">
+        <img class="brand-logo" src="{{ url_for('static', path='arxiv-logo-primary-light.svg') }}" alt="arXiv">
+        <span class="brand-label">Updater</span>
+      </a>
       <nav class="desktop-nav" aria-label="主要导航">
         <a href="/?view=weekly">本周精选</a>
         <a href="/?view=all">全部更新</a>
