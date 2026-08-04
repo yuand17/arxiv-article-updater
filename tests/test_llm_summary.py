@@ -1,15 +1,19 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
 
 from arxiv_updater.auth import create_user
 from arxiv_updater.config import Settings
+from arxiv_updater.models import Paper
 from arxiv_updater.services.llm import (
     LLMProvider,
+    OpenAICompatibleProvider,
     SummaryContent,
     SummaryQuotaError,
     SummaryResult,
+    SummaryUnavailableError,
     generate_summary,
 )
 
@@ -31,6 +35,43 @@ class FakeProvider(LLMProvider):
             input_tokens=120,
             output_tokens=80,
         )
+
+
+class StubCompletions:
+    def __init__(self, content: str, finish_reason: str = "stop") -> None:
+        self.kwargs = None
+        self.response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=finish_reason,
+                    message=SimpleNamespace(content=content),
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=100, completion_tokens=50),
+        )
+
+    def create(self, **kwargs):
+        self.kwargs = kwargs
+        return self.response
+
+
+def _provider_with_stub(stub: StubCompletions, **settings_overrides):
+    settings = Settings(
+        deepseek_api_key="test-key",
+        llm_model="deepseek-v4-flash",
+        **settings_overrides,
+    )
+    provider = OpenAICompatibleProvider(settings)
+    provider.client = SimpleNamespace(chat=SimpleNamespace(completions=stub))
+    return provider
+
+
+def _provider_paper() -> Paper:
+    return Paper(
+        title="A structured quantum summary",
+        normalized_title="a structured quantum summary",
+        abstract="We present and test a quantum method.",
+    )
 
 
 def _paper(models):
@@ -67,6 +108,28 @@ def test_summary_is_shared_cached_and_usage_is_counted_once(app_client):
         assert provider.calls == 1
         usage_count = db.scalar(select(func.count()).select_from(models.ApiUsage))
         assert usage_count == 1
+
+
+def test_deepseek_v4_summary_disables_thinking_by_default():
+    stub = StubCompletions(
+        '{"tldr":"A result.","contributions":["One."],'
+        '"methods":"A method.","limitations":"Not stated in the abstract."}'
+    )
+    provider = _provider_with_stub(stub)
+
+    result = provider.summarize(_provider_paper())
+
+    assert result.content.tldr == "A result."
+    assert stub.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_truncated_model_output_has_specific_retry_error():
+    provider = _provider_with_stub(
+        StubCompletions('{"tldr":"cut off",', finish_reason="length")
+    )
+
+    with pytest.raises(SummaryUnavailableError, match="输出被截断"):
+        provider.summarize(_provider_paper())
 
 
 def test_summary_weekly_user_quota_is_enforced(app_client):

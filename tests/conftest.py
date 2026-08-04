@@ -9,6 +9,8 @@ TEST_DB = Path(tempfile.gettempdir()) / "arxiv-updater-pytest.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["APP_SECRET_KEY"] = "test-secret"
 os.environ["LOCAL_DEV_AUTO_LOGIN"] = "false"
+os.environ["DEEPSEEK_API_KEY"] = ""
+os.environ["SERPAPI_API_KEY"] = ""
 
 from arxiv_updater import db as db_module  # noqa: E402
 from arxiv_updater import models as models_module  # noqa: E402

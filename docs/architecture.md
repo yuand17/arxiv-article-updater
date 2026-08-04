@@ -31,4 +31,4 @@ flowchart LR
 
 ## 更换模型
 
-设置 `LLM_BASE_URL`、`LLM_MODEL` 和 `DEEPSEEK_API_KEY` 即可切换任何兼容 OpenAI Chat Completions 的服务。模型输入仅有 title 和 abstract，输出必须符合固定 JSON 结构；通用结果按论文共享，但用量归因到首次生成的用户。
+设置 `LLM_BASE_URL`、`LLM_MODEL` 和 `DEEPSEEK_API_KEY` 即可切换任何兼容 OpenAI Chat Completions 的服务。模型输入仅有 title 和 abstract，输出必须符合固定 JSON 结构；通用结果按论文共享，但用量归因到首次生成的用户。DeepSeek V4 的摘要任务默认设置 `LLM_THINKING_ENABLED=false`，避免内部推理挤占结构化输出长度；只有确有需要时才开启。

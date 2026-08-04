@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings, get_settings
 from ..models import ApiUsage, Paper, PaperSummary, User
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 
 class SummaryUnavailableError(RuntimeError):
@@ -63,6 +63,13 @@ class OpenAICompatibleProvider(LLMProvider):
             "or limitations.\n\n"
             f"Title: {paper.title}\n\nAbstract: {paper.abstract}"
         )
+        extra_body = None
+        if self.settings.llm_model.startswith("deepseek-v4"):
+            extra_body = {
+                "thinking": {
+                    "type": "enabled" if self.settings.llm_thinking_enabled else "disabled"
+                }
+            }
         try:
             response = self.client.chat.completions.create(
                 model=self.settings.llm_model,
@@ -79,13 +86,21 @@ class OpenAICompatibleProvider(LLMProvider):
                 response_format={"type": "json_object"},
                 temperature=0.1,
                 max_tokens=700,
+                extra_body=extra_body,
             )
-            raw = response.choices[0].message.content or "{}"
-            content = SummaryContent.model_validate(json.loads(raw))
-        except (json.JSONDecodeError, ValidationError, IndexError, AttributeError) as exc:
-            raise SummaryUnavailableError("模型返回的总结格式无效，请稍后重试。") from exc
         except Exception as exc:
             raise SummaryUnavailableError("AI 总结服务暂时不可用，请稍后重试。") from exc
+
+        try:
+            choice = response.choices[0]
+            if choice.finish_reason == "length":
+                raise SummaryUnavailableError("模型输出被截断，请重试或联系管理员。")
+            raw = choice.message.content or "{}"
+            content = SummaryContent.model_validate(json.loads(raw))
+        except SummaryUnavailableError:
+            raise
+        except (json.JSONDecodeError, ValidationError, IndexError, AttributeError) as exc:
+            raise SummaryUnavailableError("模型返回的总结格式无效，请稍后重试。") from exc
 
         usage = response.usage
         return SummaryResult(

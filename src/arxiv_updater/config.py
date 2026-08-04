@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
+    llm_thinking_enabled: bool = False
     llm_monthly_token_budget: int = 5_000_000
     summary_user_weekly_limit: int = 50
     source_cache_dir: str = "data/cache"
