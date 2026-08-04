@@ -69,3 +69,29 @@ def test_authenticated_feed_and_actions(app_client):
     response = client.post(f"/papers/{paper_id}/dismiss")
     assert response.text == ""
 
+
+def test_feed_groups_tracked_author_sources_into_one_counted_badge(app_client):
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        create_user(db, "authors-ui@example.com", "a-strong-password", "Author Reader")
+        paper = _paper(models, "A paper from two tracked authors", 1, "scholar")
+        paper.sources[0].metadata_json = {"tracked_author_id": "author-one"}
+        paper.sources.append(
+            models.PaperSource(
+                source="scholar",
+                external_id="scholar-second-author",
+                metadata_json={"tracked_author_id": "author-two"},
+            )
+        )
+        db.add(paper)
+        db.commit()
+
+    client.post(
+        "/login",
+        data={"email": "authors-ui@example.com", "password": "a-strong-password"},
+    )
+    response = client.get("/?view=all")
+
+    assert response.status_code == 200
+    assert response.text.count(">重点作者 2</span>") == 1
+    assert response.text.count(">重点作者</span>") == 0

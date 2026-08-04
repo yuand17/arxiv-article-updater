@@ -2,8 +2,10 @@
   <div class="paper-index">{{ "%02d"|format(paper_index) }}</div>
   <div class="paper-content">
     <div class="paper-meta">
+      {% set author_count = tracked_author_count(item.paper) %}
+      {% if author_count %}<span class="source-tag source-scholar">重点作者 {{ author_count }}</span>{% endif %}
       {% for source in item.paper.sources %}
-        <span class="source-tag source-{{ source.source }}">{{ source_label(source.source, source.metadata_json) }}</span>
+        {% if source.source != 'scholar' %}<span class="source-tag source-{{ source.source }}">{{ source_label(source.source, source.metadata_json) }}</span>{% endif %}
       {% endfor %}
       {% for cat in item.paper.categories[:2] %}<span class="category-tag">{{ cat }}</span>{% endfor %}
       {% if item.paper.scites_count %}<span class="scirate-score">▲ {{ item.paper.scites_count }}</span>{% endif %}

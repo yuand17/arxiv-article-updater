@@ -51,7 +51,18 @@ def source_label(source: str, metadata: dict) -> str:
     )
 
 
+def tracked_author_count(paper: Paper) -> int:
+    return len(
+        {
+            str(source.metadata_json.get("tracked_author_id") or source.external_id)
+            for source in paper.sources
+            if source.source == "scholar"
+        }
+    )
+
+
 templates.env.globals["source_label"] = source_label
+templates.env.globals["tracked_author_count"] = tracked_author_count
 
 
 def settings_context(
