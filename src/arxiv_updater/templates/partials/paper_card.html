@@ -19,7 +19,7 @@
     <div id="detail-{{ item.paper.id }}" class="paper-detail"></div>
     <div class="paper-actions">
       <button class="interest-button" hx-post="/papers/{{ item.paper.id }}/abstract" hx-target="#detail-{{ item.paper.id }}" hx-swap="innerHTML" hx-indicator="#loading-{{ item.paper.id }}">
-        <span>⌄</span> 查看 Abstract
+        查看 Abstract
       </button>
       <span id="loading-{{ item.paper.id }}" class="htmx-indicator loading">正在打开…</span>
       {% set saved = 'saved' in item.interaction_kinds %}
