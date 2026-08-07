@@ -54,4 +54,3 @@ def test_parse_journal_feed_filters_corrections():
     assert papers[0].doi == "10.1103/example.42"
     assert papers[0].authors == ["Alice Physicist"]
     assert papers[0].abstract == "We report a controlled observation."
-

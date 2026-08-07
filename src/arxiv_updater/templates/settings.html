@@ -1,77 +1,94 @@
 {% extends "base.html" %}
 {% block title %}设置 · arXiv Updater{% endblock %}
 {% block body %}
-<main class="settings-shell{% if user.role.value == 'admin' %} wide{% endif %}">
+<main class="settings-shell">
   <header class="page-heading">
-    <p class="eyebrow">PREFERENCES</p>
+    <p class="eyebrow">LOCAL PREFERENCES</p>
     <h1>设置</h1>
-    <p>管理你的研究兴趣与重点作者。管理员还可以在这里配置数据源并查看系统状态。</p>
+    <p>所有数据与互动记录只保存在这台电脑的 SQLite 论文库中。</p>
   </header>
+
   <div class="settings-grid">
     <section class="settings-card">
       <span class="step-number">01</span>
-      <h2>研究兴趣</h2>
-      <p>输入英文关键词或一小段研究方向描述，排序器会匹配标题和 abstract。</p>
-      {% if saved %}<p class="success-note">已保存，后续排序会使用新偏好。</p>{% endif %}
+      <h2>我的研究偏好</h2>
+      <p>填写兴趣作为冷启动提示。DeepSeek 每周根据论文标题、作者、abstract 与阅读信号更新偏好画像。</p>
+      {% if saved %}<p class="success-note">已保存，下一次推荐会使用新偏好。</p>{% endif %}
       <form method="post" action="/settings" class="stack">
-        <textarea name="interests" rows="7" placeholder="quantum error correction, tensor networks, topological phases...">{{ user.interests }}</textarea>
+        <textarea name="interests" rows="6" placeholder="quantum error correction, tensor networks, topological phases...">{{ preferences.manual_interests }}</textarea>
         <button type="submit">保存兴趣</button>
       </form>
+      {% if preferences.profile_summary %}
+      <div class="profile-summary"><strong>当前画像</strong><p>{{ preferences.profile_summary }}</p><small>上次生成：{{ preferences.profile_generated_at.strftime('%Y-%m-%d %H:%M') if preferences.profile_generated_at else '尚未生成' }}</small></div>
+      {% else %}<p class="muted">尚未生成 DeepSeek 偏好画像；没有 API key 时会使用本地回退排序。</p>{% endif %}
+      <form method="post" action="/settings/preferences/rebuild"><button class="secondary-button">立即重建偏好画像</button></form>
     </section>
+
     <section class="settings-card">
       <span class="step-number">02</span>
       <h2>Google Scholar 重点作者</h2>
-      <p>粘贴公开作者主页链接；系统按全组去重后计入 SerpAPI 额度。</p>
+      <p>粘贴公开作者主页链接。同步使用 SerpAPI；新论文会尝试补齐原始 abstract。</p>
       <form method="post" action="/settings/authors" class="inline-form">
         <input type="url" name="profile_url" required placeholder="https://scholar.google.com/citations?user=...">
-        <button type="submit">关注</button>
+        <button type="submit">添加作者</button>
       </form>
       <div class="follow-list">
-        {% for follow in follows %}
-        <div><span><strong>{{ follow.author.name }}</strong><small>{{ follow.author.scholar_author_id }}</small></span><form method="post" action="/settings/authors/{{ follow.id }}/delete"><button class="text-button">移除</button></form></div>
-        {% else %}<p class="muted">还没有关注作者。</p>{% endfor %}
+        {% for author in authors %}
+        <div><span><strong>{{ author.name }}</strong><small>{{ author.scholar_author_id }}</small></span><form method="post" action="/settings/authors/{{ author.id }}/delete"><button class="text-button">移除</button></form></div>
+        {% else %}<p class="muted">还没有重点作者。</p>{% endfor %}
       </div>
     </section>
   </div>
-  {% if user.role.value == 'admin' %}
-  <section class="admin-settings" id="system">
-    <header class="admin-settings-heading">
-      <p class="eyebrow">SYSTEM HEALTH</p>
-      <h2>系统与数据源</h2>
-      <p>外部来源失败不会影响已有论文的浏览。</p>
-    </header>
-    <div class="admin-grid">
-      <div class="settings-card">
-        <h2>成员邀请</h2>
-        <form method="post" action="/admin/invites"><button>生成 7 天邀请码</button></form>
-        {% if invite_url %}<label class="invite-result">邀请链接<input value="{{ invite_url }}" readonly onclick="this.select()"></label>{% endif %}
-      </div>
-      <div class="settings-card">
-        <h2>API 用量</h2>
-        {% for service, requests, tokens in usage %}<div class="metric-row"><strong>{{ service }}</strong><span>{{ requests or 0 }} requests</span><span>{{ tokens or 0 }} tokens</span></div>{% else %}<p class="muted">尚未产生外部 API 用量。</p>{% endfor %}
-      </div>
+
+  <section class="settings-section">
+    <header><p class="eyebrow">SOURCES</p><h2>更新与外部服务</h2><p>频率按来源独立计算。失败后六小时重试，不影响已有论文浏览。</p></header>
+    <div class="schedule-grid">
+      {% for schedule in schedules %}
+      {% set labels = {'arxiv': 'arXiv', 'scirate': 'SciRate', 'scholar': 'Google Scholar', 'journals': '重点期刊'} %}
+      <section class="settings-card schedule-card">
+        <h3>{{ labels[schedule.source] }}</h3>
+        <form method="post" action="/settings/schedules/{{ schedule.source }}" class="schedule-form">
+          <label><input type="checkbox" name="enabled" {{ 'checked' if schedule.enabled }}> 启用</label>
+          <label>每 <input name="interval_days" type="number" min="1" max="30" value="{{ schedule.interval_days }}"> 天更新</label>
+          <button class="secondary-button" type="submit">保存频率</button>
+        </form>
+        <small>上次成功：{{ schedule.last_success_at.strftime('%Y-%m-%d %H:%M') if schedule.last_success_at else '尚未成功' }}</small>
+        <small>下次计划：{{ schedule.next_due_at.strftime('%Y-%m-%d %H:%M') if schedule.next_due_at else '等待安排' }}</small>
+        {% if schedule.last_error %}<p class="error">{{ schedule.last_error }}</p>{% endif %}
+        <form method="post" action="/settings/sync/{{ schedule.source }}"><button class="text-button">立即更新</button></form>
+      </section>
+      {% endfor %}
     </div>
+    <div class="service-status">
+      {% for name, configured in service_configured.items() %}<span class="status {{ 'status-success' if configured else 'status-skipped' }}">{{ name }}：{{ '已配置' if configured else '未配置' }}</span>{% endfor %}
+      <p class="muted">API key 只从本地 `.env` 读取，设置页不会显示或保存 key。</p>
+    </div>
+  </section>
+
+  <section class="settings-section">
+    <header><p class="eyebrow">JOURNALS</p><h2>期刊来源</h2><p>默认包含 Nature、Nature Physics 与 Physical Review Letters；可补充公开 HTTPS RSS/Atom。</p></header>
     <section class="settings-card">
-      <h2>自定义期刊源</h2>
-      <p class="muted">默认已包含 Nature、Nature Physics 和 Physical Review Letters。</p>
       {% if journal_error %}<p class="error">RSS/Atom 地址必须是公开的 HTTPS URL。</p>{% endif %}
-      <form method="post" action="/admin/journals" class="inline-form">
+      <form method="post" action="/settings/journals" class="inline-form journal-form">
         <label>期刊名称<input name="name" required placeholder="例如 Science"></label>
         <label>RSS / Atom URL<input name="feed_url" type="url" required placeholder="https://example.org/feed.xml"></label>
         <label>ISSN（可选）<input name="issn" placeholder="1234-5678"></label>
         <button>添加来源</button>
       </form>
       {% for feed in journal_feeds %}
-        <div class="follow-row"><div><strong>{{ feed.name }}</strong><small>{{ feed.feed_url }}{% if feed.issn %} · {{ feed.issn }}{% endif %}</small></div><form method="post" action="/admin/journals/{{ feed.id }}/delete"><button class="danger">删除</button></form></div>
-      {% endfor %}
+        <div class="follow-row"><div><strong>{{ feed.name }}</strong><small>{{ feed.feed_url }}{% if feed.issn %} · {{ feed.issn }}{% endif %}</small></div><form method="post" action="/settings/journals/{{ feed.id }}/delete"><button class="danger">删除</button></form></div>
+      {% else %}<p class="muted">尚未添加自定义期刊源。</p>{% endfor %}
     </section>
-    <section class="settings-card status-table">
-      <h2>最近同步</h2>
+  </section>
+
+  <section class="settings-section status-table">
+    <header><p class="eyebrow">ACTIVITY</p><h2>最近同步与 API 用量</h2></header>
+    <div class="settings-card">
       <table><thead><tr><th>来源</th><th>状态</th><th>新增/读取</th><th>开始时间</th><th>信息</th></tr></thead><tbody>
         {% for run in runs %}<tr><td>{{ run.source }}</td><td><span class="status status-{{ run.status.value }}">{{ run.status.value }}</span></td><td>{{ run.items_created }}/{{ run.items_seen }}</td><td>{{ run.started_at.strftime('%m-%d %H:%M') }}</td><td>{{ run.error or '—' }}</td></tr>{% else %}<tr><td colspan="5">还没有同步记录。</td></tr>{% endfor %}
       </tbody></table>
-    </section>
+      <div class="usage-list">{% for service, requests, tokens in usage %}<span><strong>{{ service }}</strong> {{ requests or 0 }} requests · {{ tokens or 0 }} tokens</span>{% else %}<span class="muted">尚未产生外部 API 用量。</span>{% endfor %}</div>
+    </div>
   </section>
-  {% endif %}
 </main>
 {% endblock %}

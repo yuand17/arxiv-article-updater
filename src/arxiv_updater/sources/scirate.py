@@ -49,7 +49,8 @@ class SciRateAdapter(SourceAdapter):
         self.records: list[SciRateRecord] = []
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
-        url = "https://scirate.com/arxiv/quant-ph"
+        # The site exposes its rolling community list through this explicit three-day range.
+        url = "https://scirate.com/?range=3"
         content = self.cache.get(url)
         if content is None:
             last_error: httpx.HTTPError | None = None

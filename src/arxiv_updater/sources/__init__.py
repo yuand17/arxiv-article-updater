@@ -3,4 +3,3 @@
 from .base import PaperCandidate, SourceAdapter
 
 __all__ = ["PaperCandidate", "SourceAdapter"]
-

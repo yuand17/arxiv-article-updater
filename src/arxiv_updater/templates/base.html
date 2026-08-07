@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}arXiv 智能文章更新器{% endblock %}</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=20260804-settings">
+    <title>{% block title %}arXiv Updater{% endblock %}</title>
+    <link rel="icon" href="{{ url_for('static', path='icons/arxiv-updater.ico') }}" sizes="any">
+    <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=20260807-single-user">
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
   </head>
   <body>
-    {% if user %}
     <header class="topbar">
       <a class="brand" href="/" aria-label="arXiv Updater">
         <img class="brand-logo" src="{{ url_for('static', path='arxiv-logo-primary-light.svg') }}" alt="arXiv">
@@ -20,12 +20,8 @@
         <a href="/?view=saved">收藏</a>
         <a href="/settings">设置</a>
       </nav>
-      <div class="user-menu">
-        <span>{{ user.display_name }}</span>
-        <form method="post" action="/logout"><button class="text-button">退出</button></form>
-      </div>
+      <span class="local-badge">仅本机</span>
     </header>
-    {% endif %}
     {% block body %}{% endblock %}
   </body>
 </html>

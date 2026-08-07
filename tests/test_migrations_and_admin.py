@@ -1,59 +1,112 @@
+import sqlite3
+
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select
 
 from alembic import command
-from arxiv_updater.auth import create_user
 from arxiv_updater.config import get_settings
 
 
-def test_initial_migration_has_no_schema_drift(tmp_path, monkeypatch):
+def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_path, monkeypatch):
     database_path = tmp_path / "migration.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
     get_settings.cache_clear()
     config = Config("alembic.ini")
     try:
+        command.upgrade(config, "0002")
+        with sqlite3.connect(database_path) as conn:
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash, display_name, role, interests, "
+                "is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "user-1",
+                    "local@example.com",
+                    "hash",
+                    "Local",
+                    "ADMIN",
+                    "many body",
+                    1,
+                    "2026-01-01",
+                ),
+            )
+            conn.execute(
+                "INSERT INTO papers (id, title, normalized_title, abstract, authors_text, "
+                "first_author, discovered_at, categories, scites_count, is_scirate_hot) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "paper-1",
+                    "Migration paper",
+                    "migration paper",
+                    "Original abstract",
+                    "A Author",
+                    "a author",
+                    "2026-01-01",
+                    "[]",
+                    0,
+                    0,
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO interactions (id, user_id, paper_id, kind, weight, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [
+                    ("old-interest", "user-1", "paper-1", "INTERESTED", 3, "2026-01-01"),
+                    ("keep-fulltext", "user-1", "paper-1", "FULLTEXT", 1, "2026-01-02"),
+                    ("keep-dismissed", "user-1", "paper-1", "DISMISSED", -5, "2026-01-03"),
+                ],
+            )
+            conn.execute(
+                "INSERT INTO paper_summaries (id, paper_id, tldr, contributions, methods, model, "
+                "prompt_version, input_tokens, output_tokens, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("summary-1", "paper-1", "old", "[]", "old", "old", "v4", 0, 0, "2026-01-01"),
+            )
+            conn.commit()
         command.upgrade(config, "head")
-        command.check(config)
-        tables = set(inspect(create_engine(f"sqlite:///{database_path.as_posix()}")).get_table_names())
-        assert {"papers", "users", "paper_summaries", "journal_subscriptions"} <= tables
-        command.downgrade(config, "base")
+        engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+        tables = set(inspect(engine).get_table_names())
+        assert {"papers", "app_preferences", "source_schedules", "recommendation_batches"} <= tables
+        assert not {"users", "invites", "author_follows", "paper_summaries"} & tables
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM papers").scalar_one() == 1
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM interactions").scalar_one() == 2
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT COUNT(*) FROM interactions WHERE kind = 'INTERESTED'"
+                ).scalar_one()
+                == 0
+            )
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT manual_interests FROM app_preferences"
+                ).scalar_one()
+                == "many body"
+            )
+            assert (
+                connection.exec_driver_sql("SELECT COUNT(*) FROM source_schedules").scalar_one()
+                == 4
+            )
     finally:
         get_settings.cache_clear()
 
 
-def test_admin_can_add_only_https_journal_feeds(app_client):
+def test_local_settings_can_add_only_public_https_journal_feeds(app_client):
     client, session_factory, models = app_client
-    with session_factory() as db:
-        create_user(
-            db,
-            "feeds-admin@example.com",
-            "a-strong-password",
-            "Feed Admin",
-            models.UserRole.ADMIN,
-        )
-    client.post(
-        "/login",
-        data={"email": "feeds-admin@example.com", "password": "a-strong-password"},
-    )
-
     settings_response = client.get("/settings")
     assert settings_response.status_code == 200
-    assert "系统与数据源" in settings_response.text
-    assert 'href="/admin"' not in settings_response.text
-
-    admin_response = client.get("/admin", follow_redirects=False)
-    assert admin_response.status_code == 303
-    assert admin_response.headers["location"] == "/settings#system"
+    assert "更新与外部服务" in settings_response.text
+    assert "成员邀请" not in settings_response.text
 
     response = client.post(
-        "/admin/journals",
+        "/settings/journals",
         data={"name": "Unsafe", "feed_url": "http://localhost/feed", "issn": ""},
+        follow_redirects=False,
     )
-    assert response.status_code == 200
-    assert "必须是公开的 HTTPS URL" in response.text
+    assert response.status_code == 303
+    assert "journal_error=https" in response.headers["location"]
 
     response = client.post(
-        "/admin/journals",
+        "/settings/journals",
         data={
             "name": "Example Physics",
             "feed_url": "https://journals.example.org/physics.atom",
@@ -61,7 +114,6 @@ def test_admin_can_add_only_https_journal_feeds(app_client):
         },
     )
     assert response.status_code == 200
-    assert "Example Physics" in response.text
     with session_factory() as db:
         feed = db.scalar(
             select(models.JournalSubscription).where(

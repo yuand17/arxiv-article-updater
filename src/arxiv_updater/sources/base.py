@@ -27,4 +27,3 @@ class SourceAdapter(ABC):
     @abstractmethod
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         """Fetch source records without writing application state."""
-

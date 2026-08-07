@@ -1,46 +1,66 @@
-# arXiv 智能文章更新器
+# arXiv Updater
 
-一个面向科研个人与小组的轻量论文阅读网页。它把重点作者、SciRate 热门、arXiv 的 `quant-ph`/全部 `cond-mat` 更新，以及 Nature、Nature Physics、Physical Review Letters 集中到一个可个性化的英文论文流中。界面使用中文，论文内容和 AI 总结保持英文。
+一个只在 Windows 本机运行的个人论文库。它把 arXiv、SciRate、Google Scholar 重点作者与重点期刊集中在同一页面；论文和互动历史只保存在本机 SQLite 数据库中。
 
-## 已实现
+## 功能
 
-- Google Scholar 重点作者：通过 Scholar 主页 URL 关注，使用 SerpAPI 查询，不直接爬取 Google Scholar。
-- arXiv：每天增量同步 `quant-ph` 与全部显式配置的 `cond-mat` 子分类。
-- SciRate：按 arXiv ID 合并票数，标记每日前 10 或至少 5 票的热门论文。
-- 期刊：默认 Nature、Nature Physics、PRL，管理员还可添加 HTTPS RSS/Atom 源。
-- 个性化：重点作者、期刊、热度、新鲜度、关键词与个人行为共同排序；互不共享成员行为数据。
-- AI 总结：按需调用 OpenAI-compatible API，默认 DeepSeek；只依据 abstract 生成英文结构化总结并全组缓存。
-- 运维：SQLite 本地模式、PostgreSQL 组内模式、Alembic、Docker Compose、备份/恢复与 CI。
+- 无账号、邀请、管理员或远程部署功能；服务只绑定本机回环地址。
+- “全部更新”显示最近 30 天入库的论文，严格按入库时间倒序，可每次追加 100 篇。
+- “本周精选”每三天生成一次：先由 DeepSeek 根据每周偏好画像匹配，再结合新鲜度、重点作者、SciRate 和期刊信号排序；没有 key 时仍有稳定的本地回退排序。
+- 点击“查看 Abstract”会记录阅读兴趣，并显示原始摘要；Scholar 缺摘要会从本地、Semantic Scholar、arXiv 或公开元数据逐级补全，绝不让模型编造摘要。
+- 来源默认频率：arXiv 每天、SciRate 每 3 天、Google Scholar 每 7 天、重点期刊每 7 天；设置页可调为 1–30 天。
+- Windows 登录后静默自启；桌面图标用于启动或唤醒本地网页。
 
-## Windows 本地快速开始
+## 首次安装
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 .venv\Scripts\arxiv-updater init-db
-.venv\Scripts\arxiv-updater serve --with-scheduler
+powershell.exe -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1
 ```
 
-打开 <http://127.0.0.1:8000>。开发模式只在绑定回环地址时使用本地自动登录。SerpAPI 和 DeepSeek key 都是可选的；没有 key 时已有论文和其他来源仍可浏览。
+在 `.env` 中按需填写 API key。不要把真实 key 提交到 Git：
 
-常用诊断与同步命令：
+```dotenv
+SERPAPI_API_KEY=
+SEMANTIC_SCHOLAR_API_KEY=
+DEEPSEEK_API_KEY=
+```
+
+`SEMANTIC_SCHOLAR_API_KEY` 可选；不填也会尝试补摘要，但速度和限流表现较差。设置页只显示“已配置/未配置”。
+
+安装快捷方式后：
+
+- 双击桌面的 **arXiv Updater**：如果服务未运行，会在后台启动、通过健康检查后打开网页；已经运行则直接打开。
+- Windows 登录：**arXiv Updater Background** 在 Startup 文件夹中静默启动服务和定时更新，不弹浏览器。
+
+如果移动项目目录，请重新运行 `scripts\install_windows_shortcuts.ps1` 更新两个绝对路径快捷方式。
+
+## 手动运行与诊断
 
 ```powershell
-arxiv-updater doctor
-arxiv-updater sync --source arxiv
-arxiv-updater sync --source journals
-arxiv-updater create-admin your@email.example
-arxiv-updater create-invite
-arxiv-updater migrate-db
+.venv\Scripts\arxiv-updater serve
+.venv\Scripts\arxiv-updater sync --source arxiv
+.venv\Scripts\arxiv-updater doctor
+.venv\Scripts\arxiv-updater migrate-db
+```
+
+网页地址固定为 <http://127.0.0.1:8000>。`serve` 会启动内嵌调度器；不需要也不存在独立 worker。
+
+升级数据库前，程序会用 SQLite backup API 在 `data\backups\` 创建并校验带时间戳的副本。若迁移失败，启动会停止并报告备份路径。
+
+## 开发验证
+
+```powershell
+.venv\Scripts\python -m pytest -m "not browser"
+.venv\Scripts\python -m ruff check src tests alembic
+.venv\Scripts\python -m mypy src\arxiv_updater
 ```
 
 ## 文档
 
-- [架构与扩展](docs/architecture.md)
-- [数据源与调度](docs/sources.md)
-- [Docker 组内部署、备份与迁移](docs/deployment.md)
-
-## 安全边界
-
-程序不保存或代理 PDF，只保存公开元数据与 abstract。API key 只从环境变量读取，不写入数据库或日志。当前 Docker 配置面向受控内网/VPN；若暴露到公网，必须增加 HTTPS 反向代理、正式域名、安全审计与网络访问控制。
+- [架构](docs/architecture.md)
+- [来源、摘要补全与调度](docs/sources.md)
+- [重构工程计划](docs/single-user-refactor-plan.md)

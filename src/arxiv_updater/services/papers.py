@@ -62,10 +62,14 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
     normalized_doi = normalize_doi(candidate.doi)
     if paper is None:
         authors_text = ", ".join(candidate.authors)
+        abstract = candidate.abstract.strip()
         paper = Paper(
             title=candidate.title.strip(),
             normalized_title=normalize_title(candidate.title),
-            abstract=candidate.abstract.strip(),
+            abstract=abstract,
+            abstract_source=candidate.source if abstract else "",
+            abstract_status="available" if abstract else "missing",
+            abstract_checked_at=utcnow() if abstract else None,
             authors_text=authors_text,
             first_author=candidate.authors[0].strip().lower() if candidate.authors else "",
             published_at=candidate.published_at,
@@ -82,6 +86,9 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
     else:
         if candidate.abstract and not paper.abstract:
             paper.abstract = candidate.abstract.strip()
+            paper.abstract_source = candidate.source
+            paper.abstract_status = "available"
+            paper.abstract_checked_at = utcnow()
         if candidate.arxiv_id and not paper.arxiv_id:
             paper.arxiv_id = candidate.arxiv_id
         if normalized_doi and not paper.doi:

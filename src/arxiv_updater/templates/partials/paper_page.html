@@ -1,0 +1,9 @@
+{% for item in ranked %}
+  {% set paper_index = loop.index + offset %}
+  {% include "partials/paper_card.html" %}
+{% endfor %}
+<div class="load-more" id="load-more" hx-swap-oob="true">
+  {% if has_more %}
+  <button class="secondary-button" hx-get="/papers?view={{ view }}&q={{ q|urlencode }}&category={{ category|urlencode }}&offset={{ next_offset }}" hx-target=".paper-list" hx-swap="beforeend">加载更多（每次 100 篇）</button>
+  {% endif %}
+</div>

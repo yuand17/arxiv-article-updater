@@ -28,13 +28,10 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class UserRole(StrEnum):
-    MEMBER = "member"
-    ADMIN = "admin"
-
-
 class InteractionKind(StrEnum):
-    INTERESTED = "interested"
+    """Explicit single-user reading signals used by the preference profile."""
+
+    ABSTRACT_VIEWED = "abstract_viewed"
     SAVED = "saved"
     FULLTEXT = "fulltext"
     DISMISSED = "dismissed"
@@ -47,34 +44,6 @@ class SyncStatus(StrEnum):
     SKIPPED = "skipped"
 
 
-class User(Base):
-    __tablename__ = "users"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
-    display_name: Mapped[str] = mapped_column(String(120), default="Researcher")
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.MEMBER)
-    interests: Mapped[str] = mapped_column(Text, default="")
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    interactions: Mapped[list["Interaction"]] = relationship(back_populates="user")
-    follows: Mapped[list["AuthorFollow"]] = relationship(back_populates="user")
-
-
-class Invite(Base):
-    __tablename__ = "invites"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    created_by_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
 class Paper(Base):
     __tablename__ = "papers"
 
@@ -82,6 +51,11 @@ class Paper(Base):
     title: Mapped[str] = mapped_column(Text)
     normalized_title: Mapped[str] = mapped_column(Text, index=True)
     abstract: Mapped[str] = mapped_column(Text, default="")
+    abstract_source: Mapped[str] = mapped_column(String(50), default="")
+    abstract_match_confidence: Mapped[float | None] = mapped_column(Float)
+    abstract_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    abstract_status: Mapped[str] = mapped_column(String(20), default="missing", index=True)
+    semantic_scholar_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     authors_text: Mapped[str] = mapped_column(Text, default="")
     first_author: Mapped[str] = mapped_column(String(255), default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -100,7 +74,6 @@ class Paper(Base):
 
     sources: Mapped[list["PaperSource"]] = relationship(back_populates="paper")
     interactions: Mapped[list["Interaction"]] = relationship(back_populates="paper")
-    summary: Mapped["PaperSummary | None"] = relationship(back_populates="paper")
 
     __table_args__ = (Index("idx_papers_published_discovered", "published_at", "discovered_at"),)
 
@@ -131,8 +104,6 @@ class TrackedAuthor(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    followers: Mapped[list["AuthorFollow"]] = relationship(back_populates="author")
-
 
 class JournalSubscription(Base):
     __tablename__ = "journal_subscriptions"
@@ -145,26 +116,10 @@ class JournalSubscription(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
-class AuthorFollow(Base):
-    __tablename__ = "author_follows"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    author_id: Mapped[str] = mapped_column(
-        ForeignKey("tracked_authors.id", ondelete="CASCADE"), index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-    user: Mapped[User] = relationship(back_populates="follows")
-    author: Mapped[TrackedAuthor] = relationship(back_populates="followers")
-    __table_args__ = (UniqueConstraint("user_id", "author_id", name="uq_user_author_follow"),)
-
-
 class Interaction(Base):
     __tablename__ = "interactions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
     kind: Mapped[InteractionKind] = mapped_column(Enum(InteractionKind), index=True)
     weight: Mapped[float] = mapped_column(Float)
@@ -172,28 +127,78 @@ class Interaction(Base):
         DateTime(timezone=True), default=utcnow, index=True
     )
 
-    user: Mapped[User] = relationship(back_populates="interactions")
     paper: Mapped[Paper] = relationship(back_populates="interactions")
-    __table_args__ = (Index("idx_interactions_user_paper_kind", "user_id", "paper_id", "kind"),)
+    __table_args__ = (UniqueConstraint("paper_id", "kind", name="uq_interaction_paper_kind"),)
 
 
-class PaperSummary(Base):
-    __tablename__ = "paper_summaries"
+class AppPreferences(Base):
+    """The one and only local reader's manually entered and inferred preferences."""
+
+    __tablename__ = "app_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    manual_interests: Mapped[str] = mapped_column(Text, default="")
+    profile_summary: Mapped[str] = mapped_column(Text, default="")
+    profile_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    profile_model: Mapped[str] = mapped_column(String(120), default="")
+    profile_prompt_version: Mapped[str] = mapped_column(String(30), default="")
+    profile_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    profile_interaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    profile_dirty_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class SourceSchedule(Base):
+    __tablename__ = "source_schedules"
+
+    source: Mapped[str] = mapped_column(String(50), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    interval_days: Mapped[int] = mapped_column(Integer)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class RecommendationBatch(Base):
+    __tablename__ = "recommendation_batches"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    paper_id: Mapped[str] = mapped_column(
-        ForeignKey("papers.id", ondelete="CASCADE"), unique=True, index=True
-    )
-    tldr: Mapped[str] = mapped_column(Text)
-    contributions: Mapped[list[str]] = mapped_column(JSON, default=list)
-    methods: Mapped[str] = mapped_column(Text, default="")
-    model: Mapped[str] = mapped_column(String(120))
-    prompt_version: Mapped[str] = mapped_column(String(30), default="v1")
-    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    profile_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    model: Mapped[str] = mapped_column(String(120), default="")
+    prompt_version: Mapped[str] = mapped_column(String(30), default="")
+    status: Mapped[str] = mapped_column(String(30), default="success", index=True)
+    fallback_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str] = mapped_column(Text, default="")
 
-    paper: Mapped[Paper] = relationship(back_populates="summary")
+    items: Mapped[list["RecommendationItem"]] = relationship(back_populates="batch")
+
+
+class RecommendationItem(Base):
+    __tablename__ = "recommendation_items"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("recommendation_batches.id", ondelete="CASCADE"), index=True
+    )
+    paper_id: Mapped[str] = mapped_column(ForeignKey("papers.id", ondelete="CASCADE"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    llm_score: Mapped[float] = mapped_column(Float, default=0)
+    final_score: Mapped[float] = mapped_column(Float, default=0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+
+    batch: Mapped[RecommendationBatch] = relationship(back_populates="items")
+    paper: Mapped[Paper] = relationship()
+    __table_args__ = (UniqueConstraint("batch_id", "paper_id", name="uq_recommendation_item"),)
 
 
 class SyncRun(Base):
@@ -214,7 +219,6 @@ class ApiUsage(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     service: Mapped[str] = mapped_column(String(50), index=True)
-    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     operation: Mapped[str] = mapped_column(String(80))
     request_count: Mapped[int] = mapped_column(Integer, default=1)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)

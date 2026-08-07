@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -25,6 +25,12 @@ from .papers import upsert_paper
 def _month_start() -> datetime:
     now = datetime.now(UTC)
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite may return legacy timestamps without tzinfo; treat those as UTC."""
+
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _serpapi_queries_this_month(db: Session) -> int:
@@ -75,6 +81,8 @@ def _apply_scirate(db: Session, adapter: SciRateAdapter) -> tuple[int, int]:
     sorted_records = sorted(adapter.records, key=lambda item: item.scites_count, reverse=True)
     hot_ids = {record.arxiv_id for record in sorted_records[:10]}
     hot_ids.update(record.arxiv_id for record in sorted_records if record.scites_count >= 5)
+    # SciRate is a rolling three-day list.  A paper must stop being marked hot once it leaves it.
+    db.execute(update(Paper).where(Paper.is_scirate_hot.is_(True)).values(is_scirate_hot=False))
     updated = 0
     for record in sorted_records:
         paper = db.scalar(select(Paper).where(Paper.arxiv_id == record.arxiv_id))
@@ -117,7 +125,7 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
             .order_by(SyncRun.finished_at.desc())
         )
         since = (
-            previous.finished_at - timedelta(days=1)
+            _as_utc(previous.finished_at) - timedelta(days=1)
             if previous and previous.finished_at
             else datetime.now(UTC) - timedelta(days=14)
         )
@@ -151,6 +159,9 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
                         request_count=len(adapter.author_ids),
                     )
                 )
+                from .abstracts import enrich_missing_scholar_abstracts
+
+                enrich_missing_scholar_abstracts(db)
             run.status = SyncStatus.SUCCESS
         except Exception as exc:
             db.rollback()

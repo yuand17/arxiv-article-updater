@@ -36,12 +36,9 @@ def parse_arxiv_feed(content: str, since: datetime | None = None) -> list[PaperC
         updated = isoparse(updated_text) if updated_text else published
         if since and max(published, updated) < since:
             continue
-        authors = [
-            _text(author, f"{ATOM}name") for author in entry.findall(f"{ATOM}author")
-        ]
+        authors = [_text(author, f"{ATOM}name") for author in entry.findall(f"{ATOM}author")]
         links = {
-            link.attrib.get("rel"): link.attrib.get("href")
-            for link in entry.findall(f"{ATOM}link")
+            link.attrib.get("rel"): link.attrib.get("href") for link in entry.findall(f"{ATOM}link")
         }
         pdf_link = next(
             (
@@ -137,13 +134,17 @@ class ArxivAdapter(SourceAdapter):
             )
             if len(page) < count:
                 break
-            if since and page and all(
-                max(
-                    candidate.published_at or since,
-                    candidate.updated_at or candidate.published_at or since,
+            if (
+                since
+                and page
+                and all(
+                    max(
+                        candidate.published_at or since,
+                        candidate.updated_at or candidate.published_at or since,
+                    )
+                    < since
+                    for candidate in page
                 )
-                < since
-                for candidate in page
             ):
                 break
         return candidates

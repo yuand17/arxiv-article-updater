@@ -1,28 +1,31 @@
-# 数据源与调度
+# 来源、摘要补全与调度
 
-| 来源 | 默认调度 | 说明 |
+## 默认频率
+
+| 来源 | 默认间隔 | 行为 |
 |---|---:|---|
-| arXiv | 每天 08:00 | `quant-ph` 与全部配置的 `cond-mat` 子分类；从上次成功时间回退一天补抓 |
-| SciRate | 每天 08:00 | 低频读取 quant-ph 页面，只作为 arXiv 热度增强层 |
-| Nature / Nature Physics / PRL | 每天 08:00 | RSS/Atom；过滤新闻、社论、勘误等非研究内容 |
-| Google Scholar 重点作者 | 每周一 06:00 | SerpAPI；最久未同步优先，默认每月最多 240 次 |
+| arXiv | 1 天 | 增量同步 `quant-ph` 与已配置的 `cond-mat` 分类，并保留一天回退窗口。 |
+| SciRate | 3 天 | 请求 `?range=3` 的滚动三日视图，按票数标注热门；成功后清除离开窗口的旧热门标记。 |
+| Google Scholar | 7 天 | 通过 SerpAPI `google_scholar_author` 同步重点作者，按 `pubdate` 读取至多 100 篇。 |
+| 重点期刊 | 7 天 | 默认 Nature、Nature Physics、PRL，也可添加公开 HTTPS RSS/Atom。 |
 
-所有时间使用 `TIMEZONE`，默认 `Asia/Shanghai`。本地可用 `serve --with-scheduler`，服务器必须用独立 `worker`，避免多 Web 进程重复调度。
+设置页可单独启用/停用来源，并将间隔设为 1–30 天。调度器每 15 分钟检查一次：到期来源成功后计算下次时间；失败后 6 小时重试，不影响其他来源或已有论文。
 
-手动诊断单个来源：
+## Google Scholar Abstract
 
-```powershell
-arxiv-updater sync --source arxiv
-arxiv-updater sync --source scirate
-arxiv-updater sync --source scholar
-arxiv-updater sync --source journals
-```
+SerpAPI 的 Author Articles 响应提供标题、作者、年份、链接和引用量，但通常不提供 abstract。Scholar 导入后的缺失摘要按以下顺序尝试补齐：
 
-管理员页面显示每次同步的状态、读取/新增数量和错误。没有 API key、页面结构变化、请求超时或额度耗尽时，其他来源和已有数据仍可使用。
+1. 本地库中 arXiv ID、DOI、规范化标题、作者与年份的可信匹配。
+2. Semantic Scholar `/graph/v1/paper/search/match`；有 `SEMANTIC_SCHOLAR_API_KEY` 时使用 `x-api-key`，未配置时匿名低频请求。
+3. Semantic Scholar 返回 arXiv ID 后，从 arXiv API 获取原始 abstract。
+4. 已知公开论文页的 `citation_abstract` 元数据。
 
-## 外部服务原则
+只有 DOI/arXiv ID 精确一致，或标题相似度至少 0.95 且作者姓氏重合、年份相差不超过一年时才写入摘要。补全会记录来源、置信度、状态与检查时间；查不到会标为 `missing`，不会让 LLM 编造内容。
 
-- Google Scholar 只通过 SerpAPI，不自动爬取 Scholar 页面。
-- arXiv 适配器保持单连接、请求间隔和增量窗口，不代理 PDF。
-- SciRate HTML 解析器是可替换增强层；403 或结构变化不得阻断主同步。
-- 自定义期刊只接受无凭据的公开 HTTPS RSS/Atom URL；同步前仍应用请求超时和内容过滤。
+## DeepSeek
+
+- 每周：读取最多 500 篇有互动的论文（标题、作者、abstract、互动类型与时间），生成结构化偏好画像。
+- 每三天：读取最近 7 天候选；不足 50 时从最近 30 天未推荐论文补齐。候选按 40–60 篇批量交给 DeepSeek，返回受严格校验的 ID、偏好分与中文理由。
+- 输出不完整、无 key、额度不足或服务失败时，使用确定性本地排序，页面仍可使用。
+
+模型调用记录为 `preference_profile` 与 `recommendation_rerank`，同时保留模型名、prompt 版本和 token 用量。
