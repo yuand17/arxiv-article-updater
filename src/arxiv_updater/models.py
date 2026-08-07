@@ -55,7 +55,7 @@ class Paper(Base):
     abstract_match_confidence: Mapped[float | None] = mapped_column(Float)
     abstract_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     abstract_status: Mapped[str] = mapped_column(String(20), default="missing", index=True)
-    semantic_scholar_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    semantic_scholar_id: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
     authors_text: Mapped[str] = mapped_column(Text, default="")
     first_author: Mapped[str] = mapped_column(String(255), default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

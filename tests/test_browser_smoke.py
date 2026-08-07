@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 import pytest
 import uvicorn
 
+from arxiv_updater import db as db_module
+from arxiv_updater import models
 from arxiv_updater import web as web_module
 
 pytestmark = pytest.mark.browser
@@ -18,10 +20,11 @@ def _available_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def test_local_feed_actions_and_mobile_layout(app_client):
+def test_local_feed_actions_and_mobile_layout():
     playwright = pytest.importorskip("playwright.sync_api")
-    _, session_factory, models = app_client
-    with session_factory() as db:
+    db_module.Base.metadata.drop_all(bind=db_module.engine)
+    db_module.Base.metadata.create_all(bind=db_module.engine)
+    with db_module.SessionLocal() as db:
         paper = models.Paper(
             title="Browser-tested quantum paper",
             normalized_title="browser-tested quantum paper",
