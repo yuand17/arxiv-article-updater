@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from arxiv_updater.arxiv_schedule import next_arxiv_update_at
-from arxiv_updater.scheduler import _set_next_due
+from arxiv_updater.scheduler import _set_next_due, run_source_update
 from arxiv_updater.services import sync as sync_module
 from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.scholar import ScholarAdapter
@@ -62,10 +62,28 @@ def test_arxiv_rate_limit_retries_in_thirty_minutes(app_client):
         assert schedule.next_due_at == datetime(2026, 8, 9, 10, 30)
 
 
+def test_source_update_only_enables_browser_challenge_when_explicit(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+    observed: list[bool] = []
+
+    def fake_sync(db, source, *, allow_browser_challenge=False):
+        observed.append(allow_browser_challenge)
+        return [models.SyncRun(source=source, status=models.SyncStatus.SUCCESS)]
+
+    monkeypatch.setattr(sync_module, "sync_sources", fake_sync)
+    with session_factory() as db:
+        assert run_source_update(db, "scirate", allow_browser_challenge=True)
+        assert run_source_update(db, "scirate")
+
+    assert observed == [True, False]
+
+
 def test_sync_normalizes_legacy_naive_sqlite_run_timestamp(app_client, monkeypatch):
     _, session_factory, models = app_client
     adapter = _EmptyAdapter()
-    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name: adapter)
+    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name, **kwargs: adapter)
     with session_factory() as db:
         db.add(
             models.SyncRun(
@@ -94,7 +112,7 @@ class _ScholarCitationAdapter(ScholarAdapter):
 def test_scholar_sync_updates_author_citation_count(app_client, monkeypatch):
     _, session_factory, models = app_client
     adapter = _ScholarCitationAdapter()
-    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name: adapter)
+    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name, **kwargs: adapter)
     monkeypatch.setattr(
         "arxiv_updater.services.abstracts.enrich_missing_scholar_abstracts",
         lambda db: None,
@@ -172,7 +190,7 @@ def test_scirate_sync_imports_ranked_papers_and_clears_old_hot_flag(
         ),
     ]
     adapter = _SciRateImportAdapter(records)
-    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name: adapter)
+    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name, **kwargs: adapter)
 
     with session_factory() as db:
         run = sync_module.sync_sources(db, "scirate")[0]

@@ -71,7 +71,13 @@ def _set_next_due(
         )
 
 
-def run_source_update(db: Session, source: str, *, now: datetime | None = None) -> bool:
+def run_source_update(
+    db: Session,
+    source: str,
+    *,
+    now: datetime | None = None,
+    allow_browser_challenge: bool = False,
+) -> bool:
     """Run one source under a process lock and write its independent schedule state."""
 
     if source not in DEFAULT_SOURCE_INTERVALS:
@@ -90,7 +96,11 @@ def run_source_update(db: Session, source: str, *, now: datetime | None = None) 
         db.commit()
         from .services.sync import sync_sources
 
-        run = sync_sources(db, source)[0]
+        run = sync_sources(
+            db,
+            source,
+            allow_browser_challenge=allow_browser_challenge and source == "scirate",
+        )[0]
         succeeded = run.status == SyncStatus.SUCCESS
         current = db.get(SourceSchedule, source) or schedule
         _set_next_due(current, now=utcnow(), succeeded=succeeded, error=run.error or "")
@@ -136,9 +146,15 @@ def run_due_jobs() -> None:
             generate_recommendation_batch(db, now=now)
 
 
-def run_source_update_in_background(source: str) -> None:
+def run_source_update_in_background(
+    source: str, allow_browser_challenge: bool = False
+) -> None:
     with SessionLocal() as db:
-        run_source_update(db, source)
+        run_source_update(
+            db,
+            source,
+            allow_browser_challenge=allow_browser_challenge,
+        )
 
 
 def configure_scheduler(scheduler: BaseScheduler) -> None:

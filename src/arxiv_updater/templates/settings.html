@@ -6,6 +6,11 @@
     <p class="eyebrow">LOCAL PREFERENCES</p>
     <h1>设置</h1>
     <p>所有数据与互动记录只保存在这台电脑的 SQLite 论文库中。</p>
+    {% if sync_started == 'scirate' %}
+    <p class="success-note">SciRate 更新已启动。如果网站要求 Cloudflare 真人验证，将弹出一个专用 Chrome 窗口；请在窗口中完成验证，成功后窗口会自动关闭并继续导入。</p>
+    {% elif sync_started %}
+    <p class="success-note">{{ sync_started }} 更新已启动，请稍后刷新本页查看结果。</p>
+    {% endif %}
   </header>
 
   <div class="settings-grid">
@@ -61,6 +66,7 @@
         <small>上次成功：{{ (schedule.last_success_at|local_datetime) if schedule.last_success_at else '尚未成功' }}</small>
         <small>下次计划：{{ (schedule.next_due_at|local_datetime) if schedule.next_due_at else '等待安排' }}</small>
         {% if schedule.last_error %}<p class="error">{{ schedule.last_error }}</p>{% endif %}
+        {% if schedule.source == 'scirate' %}<p class="muted">手动更新遇到 Cloudflare 时会打开专用 Chrome，等待您完成人工验证（最长 5 分钟）；定时更新不会弹窗。</p>{% endif %}
         <form method="post" action="/settings/sync/{{ schedule.source }}"><button class="text-button">立即更新</button></form>
       </section>
       {% endfor %}

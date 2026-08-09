@@ -1,7 +1,9 @@
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
@@ -9,10 +11,12 @@ from bs4 import BeautifulSoup
 
 from .base import PaperCandidate, SourceAdapter
 from .cache import DailyResponseCache
+from .human_browser import fetch_page_with_human_chrome
 
 SCIRATE_URL = "https://scirate.com/?range=3"
 SCIRATE_PAGE_LIMIT = 50
 SCIRATE_REQUEST_ATTEMPTS = 3
+BrowserFetcher = Callable[[str, Path, float], str]
 
 
 @dataclass(slots=True)
@@ -109,10 +113,39 @@ class SciRateAdapter(SourceAdapter):
         self,
         client: httpx.Client | None = None,
         cache: DailyResponseCache | None = None,
+        *,
+        allow_browser_challenge: bool = False,
+        browser_fetcher: BrowserFetcher = fetch_page_with_human_chrome,
+        browser_profile_directory: Path | None = None,
+        browser_timeout_seconds: float | None = None,
     ) -> None:
+        from ..config import get_settings
+
+        settings = get_settings()
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
         self.cache = cache or DailyResponseCache("scirate")
+        self.allow_browser_challenge = allow_browser_challenge
+        self.browser_fetcher = browser_fetcher
+        self.browser_profile_directory = browser_profile_directory or Path(
+            settings.scirate_browser_profile_dir
+        )
+        self.browser_timeout_seconds = (
+            browser_timeout_seconds
+            if browser_timeout_seconds is not None
+            else float(settings.scirate_browser_timeout_seconds)
+        )
         self.records: list[SciRateRecord] = []
+
+    @staticmethod
+    def _is_cloudflare_challenge(response: httpx.Response) -> bool:
+        body = response.text.lower()
+        return response.status_code == 403 and (
+            response.headers.get("cf-mitigated", "").lower() == "challenge"
+            or "cloudflare" in response.headers.get("server", "").lower()
+            or "cloudflare" in body
+            or "security verification" in body
+            or "安全验证" in body
+        )
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         # SciRate's first three-day page is the site's own vote-sorted top-50 view.
@@ -127,10 +160,24 @@ class SciRateAdapter(SourceAdapter):
                             "User-Agent": "arxiv-article-updater/0.1 (low-frequency research feed)"
                         },
                     )
-                    if response.status_code == 403:
+                    if self._is_cloudflare_challenge(response):
+                        if self.allow_browser_challenge:
+                            try:
+                                content = self.browser_fetcher(
+                                    SCIRATE_URL,
+                                    self.browser_profile_directory,
+                                    self.browser_timeout_seconds,
+                                )
+                            except RuntimeError as exc:
+                                raise RuntimeError(
+                                    f"SciRate Chrome 真人验证未完成：{exc}；已保留上次成功数据"
+                                ) from exc
+                            self.cache.put(SCIRATE_URL, content)
+                            break
                         raise RuntimeError(
                             "SciRate 返回 HTTP 403（Cloudflare 安全验证）；当前网络无法自动读取"
-                            "过去三天榜单，已保留上次成功数据"
+                            "过去三天榜单；请在设置页点击“立即更新”并完成 Chrome 真人验证，"
+                            "已保留上次成功数据"
                         )
                     response.raise_for_status()
                     content = response.text

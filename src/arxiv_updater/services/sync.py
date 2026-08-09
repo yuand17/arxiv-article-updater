@@ -40,7 +40,7 @@ def _serpapi_queries_this_month(db: Session) -> int:
     )
 
 
-def _build_adapter(db: Session, name: str):
+def _build_adapter(db: Session, name: str, *, allow_browser_challenge: bool = False):
     if name == "arxiv":
         return ArxivAdapter()
     if name == "journals":
@@ -57,7 +57,7 @@ def _build_adapter(db: Session, name: str):
         ]
         return JournalAdapter(feeds=feeds)
     if name == "scirate":
-        return SciRateAdapter()
+        return SciRateAdapter(allow_browser_challenge=allow_browser_challenge)
     if name == "scholar":
         settings = get_settings()
         used = _serpapi_queries_this_month(db)
@@ -117,7 +117,9 @@ def _apply_scirate(
     return len(sorted_records), created
 
 
-def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
+def sync_sources(
+    db: Session, source: str = "all", *, allow_browser_challenge: bool = False
+) -> list[SyncRun]:
     sources = ["arxiv", "scholar", "scirate", "journals"] if source == "all" else [source]
     runs: list[SyncRun] = []
     for name in sources:
@@ -136,7 +138,11 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
             else datetime.now(UTC) - timedelta(days=14)
         )
         try:
-            adapter = _build_adapter(db, name)
+            adapter = _build_adapter(
+                db,
+                name,
+                allow_browser_challenge=allow_browser_challenge and name == "scirate",
+            )
             candidates = adapter.fetch(since)
             if isinstance(adapter, SciRateAdapter):
                 run.items_seen, run.items_created = _apply_scirate(db, adapter, candidates)

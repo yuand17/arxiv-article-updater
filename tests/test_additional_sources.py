@@ -113,6 +113,39 @@ def test_scirate_fetch_reports_cloudflare_block_without_retries(tmp_path):
     assert requests == 1
 
 
+def test_scirate_manual_fetch_uses_human_chrome_after_cloudflare(tmp_path):
+    html = (FIXTURES / "scirate.html").read_text(encoding="utf-8")
+    calls: list[tuple[str, Path, float]] = []
+
+    def browser_fetcher(url: str, profile: Path, timeout: float) -> str:
+        calls.append((url, profile, timeout))
+        return html
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                403,
+                headers={"server": "cloudflare", "cf-mitigated": "challenge"},
+                text="Security verification",
+            )
+        )
+    )
+    profile = tmp_path / "chrome-profile"
+    adapter = SciRateAdapter(
+        client=client,
+        cache=DailyResponseCache("scirate", tmp_path),
+        allow_browser_challenge=True,
+        browser_fetcher=browser_fetcher,
+        browser_profile_directory=profile,
+        browser_timeout_seconds=42,
+    )
+
+    candidates = adapter.fetch()
+
+    assert len(candidates) == 2
+    assert calls == [("https://scirate.com/?range=3", profile, 42)]
+
+
 def test_parse_journal_feed_filters_corrections():
     feed = JournalFeed("Example Journal", "https://example.com/rss", "0000-0000")
     papers = parse_journal_feed((FIXTURES / "journal.rss").read_text(encoding="utf-8"), feed)

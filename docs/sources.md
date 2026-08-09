@@ -5,7 +5,7 @@
 | 来源 | 默认间隔 | 行为 |
 |---|---:|---|
 | arXiv | 官方发布后 | 按 [arXiv 官方时间表](https://info.arxiv.org/help/availability.html)，美东时间周日至周四 20:00 发布后 10 分钟同步；自动处理夏令时，并保留一天回退窗口。 |
-| SciRate | 3 天 | 请求 `?range=3` 的滚动三日视图，导入首页按票数排序的 50 篇论文；成功后清除离开窗口的旧热门标记。若被 HTTP 403/Cloudflare 验证拦截，则保留上次成功数据并在设置页显示明确原因。 |
+| SciRate | 3 天 | 请求 `?range=3` 的滚动三日视图，导入首页按票数排序的 50 篇论文；成功后清除离开窗口的旧热门标记。手动更新被 HTTP 403/Cloudflare 验证拦截时，会启动使用独立本地配置目录的可见 Chrome，等待用户亲自完成验证后继续；定时更新不会弹窗。失败或超时会保留上次成功数据。 |
 | Google Scholar | 7 天 | 通过 SerpAPI `google_scholar_author` 同步重点作者，按 `pubdate` 读取至多 100 篇。 |
 | 重点期刊 | 7 天 | 默认 Nature、Nature Physics、PRL，也可添加公开 HTTPS RSS/Atom。 |
 

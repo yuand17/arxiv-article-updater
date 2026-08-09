@@ -84,7 +84,11 @@ def _is_public_https(value: str) -> bool:
 
 
 def settings_context(
-    db: Session, *, saved: bool = False, journal_error: str = ""
+    db: Session,
+    *,
+    saved: bool = False,
+    journal_error: str = "",
+    sync_started: str = "",
 ) -> dict[str, object]:
     ensure_source_schedules(db)
     preferences = get_preferences(db)
@@ -117,6 +121,7 @@ def settings_context(
         },
         "saved": saved,
         "journal_error": journal_error,
+        "sync_started": sync_started,
     }
 
 
@@ -272,11 +277,22 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         return RedirectResponse(target, status_code=303)
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request, db: DbSession, journal_error: str = Query("")) -> Response:
+    def settings_page(
+        request: Request,
+        db: DbSession,
+        journal_error: str = Query(""),
+        sync_started: str = Query(""),
+    ) -> Response:
         return templates.TemplateResponse(
             request,
             "settings.html",
-            settings_context(db, journal_error=journal_error),
+            settings_context(
+                db,
+                journal_error=journal_error,
+                sync_started=(
+                    sync_started if sync_started in DEFAULT_SOURCE_INTERVALS else ""
+                ),
+            ),
         )
 
     @app.post("/settings", response_class=HTMLResponse)
@@ -390,8 +406,12 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             return HTMLResponse("未知来源", status_code=404)
         from .scheduler import run_source_update_in_background
 
-        background_tasks.add_task(run_source_update_in_background, source)
-        return RedirectResponse("/settings?sync_started=1", status_code=303)
+        background_tasks.add_task(
+            run_source_update_in_background,
+            source,
+            source == "scirate",
+        )
+        return RedirectResponse(f"/settings?sync_started={source}", status_code=303)
 
     return app
 

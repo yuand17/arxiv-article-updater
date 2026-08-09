@@ -160,3 +160,25 @@ def test_local_settings_can_add_only_public_https_journal_feeds(app_client):
         )
         assert feed is not None
         assert feed.issn == "1234-5678"
+
+
+def test_manual_scirate_sync_enables_human_chrome_assistance(app_client, monkeypatch):
+    client, _, _ = app_client
+    calls: list[tuple[str, bool]] = []
+
+    def record_update(source: str, allow_browser_challenge: bool = False) -> None:
+        calls.append((source, allow_browser_challenge))
+
+    monkeypatch.setattr(
+        "arxiv_updater.scheduler.run_source_update_in_background",
+        record_update,
+    )
+
+    response = client.post("/settings/sync/scirate", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings?sync_started=scirate"
+    assert calls == [("scirate", True)]
+    page = client.get(response.headers["location"])
+    assert "将弹出一个专用 Chrome 窗口" in page.text
+    assert "定时更新不会弹窗" in page.text
