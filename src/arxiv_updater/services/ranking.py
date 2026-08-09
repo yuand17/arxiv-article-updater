@@ -184,6 +184,16 @@ def rank_papers(
         category=category,
         interactions=interactions,
     )
+    if view == "scirate":
+        filtered.sort(
+            key=lambda paper: (
+                paper.scites_count,
+                _aware(paper.published_at),
+                _aware(paper.discovered_at),
+                paper.id,
+            ),
+            reverse=True,
+        )
     if view == "weekly":
         fallback = _fallback_weekly(filtered, now)
         return [

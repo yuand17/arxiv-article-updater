@@ -55,18 +55,18 @@ def _set_next_due(
     succeeded: bool,
     error: str = "",
 ) -> None:
-    now = as_utc(now)
-    assert now is not None
+    aware_now = as_utc(now)
+    assert aware_now is not None
     if succeeded:
-        schedule.last_success_at = now
+        schedule.last_success_at = aware_now
         schedule.next_due_at = (
-            next_arxiv_update_at(now)
+            next_arxiv_update_at(aware_now)
             if schedule.source == "arxiv"
-            else now + timedelta(days=schedule.interval_days)
+            else aware_now + timedelta(days=schedule.interval_days)
         )
         schedule.last_error = ""
     else:
-        schedule.next_due_at = now + (
+        schedule.next_due_at = aware_now + (
             RATE_LIMIT_RETRY_DELAY if "429" in error else RETRY_DELAY
         )
 

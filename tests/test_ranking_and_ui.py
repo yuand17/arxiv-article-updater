@@ -57,6 +57,19 @@ def test_weekly_fallback_can_use_source_signals_but_all_view_cannot(app_client):
         assert "重点期刊" in weekly[0].reasons
 
 
+def test_scirate_view_is_sorted_by_vote_count(app_client):
+    _, session_factory, models = app_client
+    with session_factory() as db:
+        lower = _paper(models, "Lower SciRate paper", 1, "scirate", scites=9)
+        higher = _paper(models, "Higher SciRate paper", 2, "scirate", scites=20)
+        db.add_all([lower, higher])
+        db.commit()
+
+        ranked = rank_papers(db, view="scirate", now=datetime.now(UTC))
+
+        assert [item.paper.id for item in ranked] == [higher.id, lower.id]
+
+
 def test_single_reader_dismissal_hides_and_save_is_idempotent(app_client):
     _, session_factory, models = app_client
     with session_factory() as db:

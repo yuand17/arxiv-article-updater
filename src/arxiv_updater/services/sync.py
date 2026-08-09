@@ -17,6 +17,7 @@ from ..models import (
     utcnow,
 )
 from ..sources.arxiv import ArxivAdapter
+from ..sources.base import PaperCandidate
 from ..sources.journals import DEFAULT_JOURNAL_FEEDS, JournalAdapter, JournalFeed
 from ..sources.scholar import ScholarAdapter
 from ..sources.scirate import SciRateAdapter
@@ -72,19 +73,28 @@ def _build_adapter(db: Session, name: str):
     raise ValueError(f"Unknown source: {name}")
 
 
-def _apply_scirate(db: Session, adapter: SciRateAdapter) -> tuple[int, int]:
-    sorted_records = sorted(adapter.records, key=lambda item: item.scites_count, reverse=True)
-    hot_ids = {record.arxiv_id for record in sorted_records[:10]}
-    hot_ids.update(record.arxiv_id for record in sorted_records if record.scites_count >= 5)
+def _apply_scirate(
+    db: Session, adapter: SciRateAdapter, candidates: list[PaperCandidate]
+) -> tuple[int, int]:
+    sorted_records = sorted(adapter.records, key=lambda item: item.scites_count, reverse=True)[:50]
+    candidate_by_id = {
+        candidate.arxiv_id: candidate for candidate in candidates if candidate.arxiv_id is not None
+    }
+    missing_ids = [
+        record.arxiv_id for record in sorted_records if record.arxiv_id not in candidate_by_id
+    ]
+    if missing_ids:
+        raise RuntimeError("SciRate metadata missing for: " + ", ".join(missing_ids))
+
     # SciRate is a rolling three-day list.  A paper must stop being marked hot once it leaves it.
     db.execute(update(Paper).where(Paper.is_scirate_hot.is_(True)).values(is_scirate_hot=False))
-    updated = 0
+    created = 0
     for record in sorted_records:
-        paper = db.scalar(select(Paper).where(Paper.arxiv_id == record.arxiv_id))
-        if not paper:
-            continue
+        result = upsert_paper(db, candidate_by_id[record.arxiv_id])
+        paper = result.paper
+        created += int(result.created)
         paper.scites_count = record.scites_count
-        paper.is_scirate_hot = record.arxiv_id in hot_ids
+        paper.is_scirate_hot = True
         source = db.scalar(
             select(PaperSource).where(
                 PaperSource.source == "scirate", PaperSource.external_id == record.arxiv_id
@@ -101,10 +111,10 @@ def _apply_scirate(db: Session, adapter: SciRateAdapter) -> tuple[int, int]:
                 )
             )
         else:
-            source.metadata_json = {"scites_count": record.scites_count}
+            source.url = f"https://scirate.com/arxiv/{record.arxiv_id}"
+            source.metadata_json = candidate_by_id[record.arxiv_id].metadata
             source.last_seen_at = utcnow()
-        updated += 1
-    return len(sorted_records), updated
+    return len(sorted_records), created
 
 
 def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
@@ -119,16 +129,17 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
             .where(SyncRun.source == name, SyncRun.status == SyncStatus.SUCCESS)
             .order_by(SyncRun.finished_at.desc())
         )
+        previous_finished_at = as_utc(previous.finished_at) if previous else None
         since = (
-            as_utc(previous.finished_at) - timedelta(days=1)
-            if previous and previous.finished_at
+            previous_finished_at - timedelta(days=1)
+            if previous_finished_at
             else datetime.now(UTC) - timedelta(days=14)
         )
         try:
             adapter = _build_adapter(db, name)
             candidates = adapter.fetch(since)
             if isinstance(adapter, SciRateAdapter):
-                run.items_seen, run.items_created = _apply_scirate(db, adapter)
+                run.items_seen, run.items_created = _apply_scirate(db, adapter, candidates)
             else:
                 created = 0
                 for candidate in candidates:

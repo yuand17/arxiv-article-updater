@@ -1,9 +1,13 @@
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from arxiv_updater.arxiv_schedule import next_arxiv_update_at
 from arxiv_updater.scheduler import _set_next_due
 from arxiv_updater.services import sync as sync_module
+from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.scholar import ScholarAdapter
+from arxiv_updater.sources.scirate import SciRateAdapter, SciRateRecord
 
 
 class _EmptyAdapter:
@@ -111,3 +115,78 @@ def test_scholar_sync_updates_author_citation_count(app_client, monkeypatch):
         assert author.name == "Cited Researcher"
         assert author.citation_count == 9876
         assert author.citation_count_updated_at is not None
+
+
+class _SciRateImportAdapter(SciRateAdapter):
+    def __init__(self, records: list[SciRateRecord]) -> None:
+        self.next_records = records
+        self.records: list[SciRateRecord] = []
+
+    def fetch(self, since):
+        self.records = self.next_records
+        return [
+            PaperCandidate(
+                source="scirate",
+                external_id=record.arxiv_id,
+                title=record.title,
+                authors=record.authors,
+                abstract=record.abstract,
+                published_at=record.published_at,
+                updated_at=record.published_at,
+                arxiv_id=record.arxiv_id,
+                categories=record.categories,
+                canonical_url=f"https://arxiv.org/abs/{record.arxiv_id}",
+                pdf_url=f"https://arxiv.org/pdf/{record.arxiv_id}",
+                metadata={
+                    "scites_count": record.scites_count,
+                    "rank": rank,
+                    "range_days": 3,
+                },
+            )
+            for rank, record in enumerate(self.records, start=1)
+        ]
+
+
+def test_scirate_sync_imports_ranked_papers_and_clears_old_hot_flag(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+    records = [
+        SciRateRecord(
+            arxiv_id="2608.00001",
+            scites_count=20,
+            title="Top SciRate paper",
+            authors=["Alice Example"],
+            abstract="Top abstract",
+            published_at=datetime(2026, 8, 8, tzinfo=UTC),
+            categories=["quant-ph"],
+        ),
+        SciRateRecord(
+            arxiv_id="2608.00002",
+            scites_count=0,
+            title="Fiftieth SciRate paper",
+            authors=["Bob Example"],
+            abstract="Fiftieth abstract",
+            published_at=datetime(2026, 8, 8, tzinfo=UTC),
+            categories=["quant-ph"],
+        ),
+    ]
+    adapter = _SciRateImportAdapter(records)
+    monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name: adapter)
+
+    with session_factory() as db:
+        run = sync_module.sync_sources(db, "scirate")[0]
+        papers = list(db.scalars(select(models.Paper).order_by(models.Paper.scites_count.desc())))
+        assert run.status == models.SyncStatus.SUCCESS
+        assert (run.items_seen, run.items_created) == (2, 2)
+        assert [paper.scites_count for paper in papers] == [20, 0]
+        assert all(paper.is_scirate_hot for paper in papers)
+        assert all(source.source == "scirate" for paper in papers for source in paper.sources)
+        assert papers[0].sources[0].metadata_json["rank"] == 1
+
+        adapter.next_records = records[:1]
+        second = sync_module.sync_sources(db, "scirate")[0]
+        papers = list(db.scalars(select(models.Paper).order_by(models.Paper.scites_count.desc())))
+        assert (second.items_seen, second.items_created) == (1, 0)
+        assert papers[0].is_scirate_hot is True
+        assert papers[1].is_scirate_hot is False

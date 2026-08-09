@@ -1,14 +1,16 @@
 from pathlib import Path
 
+import httpx
 import pytest
 
+from arxiv_updater.sources.cache import DailyResponseCache
 from arxiv_updater.sources.journals import JournalFeed, parse_journal_feed
 from arxiv_updater.sources.scholar import (
     parse_scholar_author_id,
     parse_scholar_citation_count,
     parse_scholar_response,
 )
-from arxiv_updater.sources.scirate import parse_scirate_page
+from arxiv_updater.sources.scirate import SciRateAdapter, parse_scirate_page
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -62,6 +64,53 @@ def test_parse_scirate_page():
         ("2607.12345", 12),
         ("2607.55555", 0),
     ]
+    assert records[0].title == "A paper"
+    assert records[0].authors == ["Alice Example", "Bob Example"]
+    assert records[0].categories == ["quant-ph"]
+    assert records[0].abstract == "A useful quantum result."
+
+
+def test_scirate_fetch_stops_at_vote_sorted_first_fifty(tmp_path):
+    items = "".join(
+        f"""
+        <li class="paper">
+          <div class="title"><a>Paper {index}</a></div>
+          <div class="authors"><a>Author {index}</a></div>
+          <div class="uid">Aug 8 2026 <a href="/arxiv/quant-ph">quant-ph</a>
+            arXiv:2608.{index:05d}v1</div>
+          <div class="scites-count"><button class="count">{index}</button></div>
+          <div class="abstract">Abstract {index}</div>
+        </li>
+        """
+        for index in range(55)
+    )
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=items))
+    )
+    adapter = SciRateAdapter(client=client, cache=DailyResponseCache("scirate", tmp_path))
+
+    candidates = adapter.fetch()
+
+    assert len(candidates) == 50
+    assert candidates[0].arxiv_id == "2608.00054"
+    assert candidates[-1].arxiv_id == "2608.00005"
+    assert candidates[0].metadata == {"scites_count": 54, "rank": 1, "range_days": 3}
+
+
+def test_scirate_fetch_reports_cloudflare_block_without_retries(tmp_path):
+    requests = 0
+
+    def blocked(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(403, text="Cloudflare security verification")
+
+    client = httpx.Client(transport=httpx.MockTransport(blocked))
+    adapter = SciRateAdapter(client=client, cache=DailyResponseCache("scirate", tmp_path))
+
+    with pytest.raises(RuntimeError, match="HTTP 403.*Cloudflare"):
+        adapter.fetch()
+    assert requests == 1
 
 
 def test_parse_journal_feed_filters_corrections():
