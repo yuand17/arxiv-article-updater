@@ -33,7 +33,7 @@ function Set-ArxivUpdaterShortcut {
     $shortcut.Save()
 }
 
-Set-ArxivUpdaterShortcut -Path (Join-Path $desktop 'arXiv Updater.lnk') -Arguments "`"$launcher`""
+Set-ArxivUpdaterShortcut -Path (Join-Path $desktop 'arXiv Updater.lnk') -Arguments "`"$launcher`" --open"
 Set-ArxivUpdaterShortcut -Path (Join-Path $startup 'arXiv Updater Background.lnk') -Arguments "`"$launcher`" --background"
 
 Write-Output "Created desktop shortcut: $(Join-Path $desktop 'arXiv Updater.lnk')"

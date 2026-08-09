@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from arxiv_updater.arxiv_schedule import next_arxiv_update_at
-from arxiv_updater.scheduler import _set_next_due, run_source_update
+from arxiv_updater.scheduler import _set_next_due, ensure_source_schedules, run_source_update
 from arxiv_updater.services import sync as sync_module
 from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.scholar import ScholarAdapter
@@ -41,6 +42,40 @@ def test_successful_arxiv_update_uses_announcement_schedule(app_client):
         schedule = db.get(models.SourceSchedule, "arxiv")
         assert schedule is not None
         assert schedule.next_due_at == datetime(2026, 8, 17, 0, 10)
+
+
+def test_journal_schedule_defaults_to_daily(app_client):
+    _, session_factory, models = app_client
+    with session_factory() as db:
+        ensure_source_schedules(db)
+        schedule = db.get(models.SourceSchedule, "journals")
+        assert schedule is not None
+        assert schedule.interval_days == 1
+
+
+def test_scholar_sync_fails_before_partial_update_when_budget_is_insufficient(app_client):
+    _, session_factory, models = app_client
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.TrackedAuthor(
+                    scholar_author_id=f"author{index:04d}",
+                    name=f"Author {index}",
+                    profile_url=f"https://scholar.google.com/citations?user=author{index:04d}",
+                )
+                for index in range(2)
+            ]
+        )
+        db.add(
+            models.ApiUsage(
+                service="serpapi",
+                operation="author_sync",
+                request_count=239,
+            )
+        )
+        db.commit()
+        with pytest.raises(RuntimeError, match="insufficient"):
+            sync_module._build_adapter(db, "scholar")
 
 
 def test_arxiv_rate_limit_retries_in_thirty_minutes(app_client):
@@ -113,10 +148,6 @@ def test_scholar_sync_updates_author_citation_count(app_client, monkeypatch):
     _, session_factory, models = app_client
     adapter = _ScholarCitationAdapter()
     monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name, **kwargs: adapter)
-    monkeypatch.setattr(
-        "arxiv_updater.services.abstracts.enrich_missing_scholar_abstracts",
-        lambda db: None,
-    )
     with session_factory() as db:
         author = models.TrackedAuthor(
             scholar_author_id="author1234",

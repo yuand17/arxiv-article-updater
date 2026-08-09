@@ -1,15 +1,15 @@
-import ipaddress
+import base64
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .arxiv_schedule import next_arxiv_update_at
@@ -20,6 +20,7 @@ from .models import (
     ApiUsage,
     Interaction,
     InteractionKind,
+    JournalEndpoint,
     JournalSubscription,
     Paper,
     SourceSchedule,
@@ -30,6 +31,11 @@ from .models import (
 from .scheduler import DEFAULT_SOURCE_INTERVALS, ensure_source_schedules
 from .services.abstracts import enrich_paper_abstract_in_background
 from .services.interactions import record_interaction, remove_interaction
+from .services.journal_discovery import (
+    JournalDiscoveryError,
+    JournalDiscoveryPreview,
+    discover_journal,
+)
 from .services.preferences import (
     get_preferences,
     mark_preferences_dirty,
@@ -41,6 +47,45 @@ from .sources.scholar import parse_scholar_author_id
 PACKAGE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 DbSession = Annotated[Session, Depends(get_db)]
+TOAST_MESSAGES = {
+    "settings_saved": ("success", "设置已保存", "新的篇数从下一次三天精选生效。"),
+    "profile_started": ("info", "画像重建已启动", "完成后会自动用于后续推荐。"),
+    "author_added": ("success", "重点作者已添加", "已加入后续 Scholar 同步。"),
+    "author_removed": ("success", "重点作者已移除", "既有论文不会被立即删除。"),
+    "journal_found": ("success", "期刊来源已找到", "请核对预览后确认添加。"),
+    "journal_added": ("success", "期刊已添加", "第一次同步已经启动。"),
+    "journal_removed": ("success", "期刊已移除", "既有论文将按保留规则处理。"),
+    "schedule_saved": ("success", "更新计划已保存", "下次运行时间已经重算。"),
+    "sync_started": ("info", "更新已启动", "可在活动记录中查看进度。"),
+}
+
+
+def _add_toast(response: Response, key: str) -> Response:
+    level, title, message = TOAST_MESSAGES[key]
+    response.headers["HX-Trigger"] = json.dumps(
+        {"app:toast": {"level": level, "title": title, "message": message}},
+    )
+    return response
+
+
+def _action_response(request: Request, key: str, location: str = "/settings") -> Response:
+    if request.headers.get("HX-Request") == "true":
+        return _add_toast(Response(status_code=204), key)
+    separator = "&" if "?" in location else "?"
+    return RedirectResponse(f"{location}{separator}toast={key}", status_code=303)
+
+
+def _settings_fragment(
+    request: Request,
+    db: Session,
+    key: str,
+) -> Response:
+    if request.headers.get("HX-Request") == "true":
+        response = templates.TemplateResponse(
+            request, "settings.html", settings_context(db)
+        )
+        return _add_toast(response, key)
+    return RedirectResponse(f"/settings?toast={key}", status_code=303)
 
 
 def source_label(source: str, metadata: dict) -> str:
@@ -70,17 +115,66 @@ def local_datetime(value: datetime | None, pattern: str = "%Y-%m-%d %H:%M") -> s
 templates.env.filters["local_datetime"] = local_datetime
 
 
-def _is_public_https(value: str) -> bool:
-    parsed = urlparse(value.strip())
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        return False
-    if parsed.hostname.lower() in {"localhost", "localhost.localdomain"}:
-        return False
+def _encode_cursor(value: datetime, item_id: str) -> str:
+    payload = json.dumps([value.isoformat(), item_id], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_cursor(value: str) -> tuple[datetime, str] | None:
+    if not value:
+        return None
     try:
-        address = ipaddress.ip_address(parsed.hostname)
-    except ValueError:
-        return True
-    return address.is_global
+        padding = "=" * (-len(value) % 4)
+        timestamp, item_id = json.loads(base64.urlsafe_b64decode(value + padding))
+        return datetime.fromisoformat(timestamp), str(item_id)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _sync_run_page(
+    db: Session, cursor: str = "", limit: int = 20
+) -> tuple[list[SyncRun], str]:
+    statement = select(SyncRun)
+    decoded = _decode_cursor(cursor)
+    if decoded:
+        before, item_id = decoded
+        statement = statement.where(
+            or_(
+                SyncRun.started_at < before,
+                and_(SyncRun.started_at == before, SyncRun.id < item_id),
+            )
+        )
+    rows = db.scalars(
+        statement.order_by(SyncRun.started_at.desc(), SyncRun.id.desc()).limit(limit + 1)
+    ).all()
+    page = list(rows[:limit])
+    next_cursor = (
+        _encode_cursor(page[-1].started_at, page[-1].id) if len(rows) > limit and page else ""
+    )
+    return page, next_cursor
+
+
+def _usage_page(
+    db: Session, cursor: str = "", limit: int = 20
+) -> tuple[list[ApiUsage], str]:
+    statement = select(ApiUsage)
+    decoded = _decode_cursor(cursor)
+    if decoded:
+        before, item_id = decoded
+        statement = statement.where(
+            or_(
+                ApiUsage.created_at < before,
+                and_(ApiUsage.created_at == before, ApiUsage.id < item_id),
+            )
+        )
+    rows = db.scalars(
+        statement.order_by(ApiUsage.created_at.desc(), ApiUsage.id.desc()).limit(limit + 1)
+    ).all()
+    page = list(rows[:limit])
+    next_cursor = (
+        _encode_cursor(page[-1].created_at, page[-1].id) if len(rows) > limit and page else ""
+    )
+    return page, next_cursor
 
 
 def settings_context(
@@ -88,11 +182,14 @@ def settings_context(
     *,
     saved: bool = False,
     journal_error: str = "",
+    journal_preview: JournalDiscoveryPreview | None = None,
     sync_started: str = "",
 ) -> dict[str, object]:
     ensure_source_schedules(db)
     preferences = get_preferences(db)
     settings = get_settings()
+    runs, run_next_cursor = _sync_run_page(db)
+    usage_details, usage_next_cursor = _usage_page(db)
     return {
         "preferences": preferences,
         "authors": db.scalars(
@@ -106,7 +203,10 @@ def settings_context(
             select(JournalSubscription).order_by(JournalSubscription.name)
         ).all(),
         "schedules": db.scalars(select(SourceSchedule).order_by(SourceSchedule.source)).all(),
-        "runs": db.scalars(select(SyncRun).order_by(SyncRun.started_at.desc()).limit(20)).all(),
+        "runs": runs,
+        "run_next_cursor": run_next_cursor,
+        "usage_details": usage_details,
+        "usage_next_cursor": usage_next_cursor,
         "usage": db.execute(
             select(
                 ApiUsage.service,
@@ -116,11 +216,11 @@ def settings_context(
         ).all(),
         "service_configured": {
             "SerpAPI": bool(settings.serpapi_api_key),
-            "Semantic Scholar": bool(settings.semantic_scholar_api_key),
             "DeepSeek": bool(settings.deepseek_api_key),
         },
         "saved": saved,
         "journal_error": journal_error,
+        "journal_preview": journal_preview,
         "sync_started": sync_started,
     }
 
@@ -138,9 +238,10 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             yield
         finally:
             if scheduler and scheduler.running:
-                scheduler.shutdown(wait=False)
+                scheduler.shutdown(wait=True)
 
     app = FastAPI(title="arXiv Updater", lifespan=lifespan)
+    app.state.journal_previews = {}
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/health")
@@ -151,14 +252,16 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     def home(
         request: Request,
         db: DbSession,
-        view: str = Query("weekly"),
+        view: str = Query("featured"),
         q: str = Query(""),
         category: str = Query(""),
         offset: int = Query(0, ge=0),
     ) -> Response:
-        allowed_views = {"weekly", "all", "authors", "scirate", "arxiv", "journals", "saved"}
-        view = view if view in allowed_views else "weekly"
-        page_size = 100 if view == "all" else 50
+        if view == "weekly":
+            return RedirectResponse("/?view=featured", status_code=303)
+        allowed_views = {"featured", "all", "authors", "scirate", "arxiv", "journals", "saved"}
+        view = view if view in allowed_views else "featured"
+        page_size = get_preferences(db).featured_paper_count if view == "featured" else 100
         items = rank_papers(
             db,
             view=view,
@@ -181,10 +284,11 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
                 "has_more": has_more,
                 "next_offset": offset + page_size,
                 "offset": offset,
-                "weekly_shortfall": view == "weekly"
+                "featured_shortfall": view == "featured"
                 and not q
                 and not category
-                and len(ranked) < 50,
+                and len(ranked) < page_size,
+                "featured_target": page_size,
             },
         )
 
@@ -197,8 +301,9 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         category: str = Query(""),
         offset: int = Query(0, ge=0),
     ) -> Response:
-        if view != "all":
-            return HTMLResponse("只支持继续加载全部更新", status_code=400)
+        pageable_views = {"all", "authors", "scirate", "arxiv", "journals", "saved"}
+        if view not in pageable_views:
+            return HTMLResponse("这个视图不支持继续加载", status_code=400)
         page_size = 100
         items = rank_papers(
             db,
@@ -295,23 +400,48 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             ),
         )
 
-    @app.post("/settings", response_class=HTMLResponse)
-    def save_settings(request: Request, db: DbSession, interests: str = Form("")) -> Response:
-        preferences = get_preferences(db)
-        preferences.manual_interests = interests.strip()
-        mark_preferences_dirty(db)
-        db.commit()
+    @app.get("/settings/activity/sync-runs", response_class=HTMLResponse)
+    def more_sync_runs(request: Request, db: DbSession, cursor: str = Query("")) -> Response:
+        runs, next_cursor = _sync_run_page(db, cursor)
         return templates.TemplateResponse(
-            request, "settings.html", settings_context(db, saved=True)
+            request,
+            "partials/sync_run_rows.html",
+            {"runs": runs, "run_next_cursor": next_cursor},
         )
 
+    @app.get("/settings/activity/api-usage", response_class=HTMLResponse)
+    def more_api_usage(request: Request, db: DbSession, cursor: str = Query("")) -> Response:
+        usage_details, next_cursor = _usage_page(db, cursor)
+        return templates.TemplateResponse(
+            request,
+            "partials/api_usage_rows.html",
+            {"usage_details": usage_details, "usage_next_cursor": next_cursor},
+        )
+
+    @app.post("/settings", response_class=HTMLResponse)
+    def save_settings(
+        request: Request,
+        db: DbSession,
+        interests: str = Form(""),
+        featured_paper_count: int = Form(66),
+    ) -> Response:
+        if not 1 <= featured_paper_count <= 200:
+            return HTMLResponse("三天精选篇数必须在 1 到 200 之间", status_code=422)
+        preferences = get_preferences(db)
+        preferences.manual_interests = interests.strip()
+        preferences.featured_paper_count = featured_paper_count
+        mark_preferences_dirty(db)
+        db.commit()
+        return _action_response(request, "settings_saved")
+
     @app.post("/settings/preferences/rebuild")
-    def rebuild_preferences(background_tasks: BackgroundTasks) -> Response:
+    def rebuild_preferences(request: Request, background_tasks: BackgroundTasks) -> Response:
         background_tasks.add_task(rebuild_preference_profile_in_background, force=True)
-        return RedirectResponse("/settings?profile_rebuild=1", status_code=303)
+        return _action_response(request, "profile_started")
 
     @app.post("/settings/authors")
     def add_author(
+        request: Request,
         background_tasks: BackgroundTasks,
         db: DbSession,
         profile_url: str = Form(),
@@ -336,49 +466,112 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
                 from .scheduler import run_source_update_in_background
 
                 background_tasks.add_task(run_source_update_in_background, "scholar")
-        return RedirectResponse("/settings", status_code=303)
+        return _settings_fragment(request, db, "author_added")
 
     @app.post("/settings/authors/{author_id}/delete")
-    def delete_author(author_id: str, db: DbSession) -> Response:
+    def delete_author(request: Request, author_id: str, db: DbSession) -> Response:
         author = db.get(TrackedAuthor, author_id)
         if author:
             db.delete(author)
             db.commit()
-        return RedirectResponse("/settings", status_code=303)
+        return _settings_fragment(request, db, "author_removed")
 
-    @app.post("/settings/journals")
-    def add_journal(
+    @app.post("/settings/journals/discover", response_class=HTMLResponse)
+    def preview_journal(
+        request: Request,
         db: DbSession,
         name: str = Form(),
-        feed_url: str = Form(),
-        issn: str = Form(""),
+        homepage_url: str = Form(),
     ) -> Response:
-        if not _is_public_https(feed_url):
-            return RedirectResponse("/settings?journal_error=https", status_code=303)
+        try:
+            preview = discover_journal(name, homepage_url)
+        except JournalDiscoveryError as exc:
+            response = templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, journal_error=str(exc)),
+                status_code=422,
+            )
+            response.headers["HX-Trigger"] = json.dumps(
+                {
+                    "app:toast": {
+                        "level": "error",
+                        "title": "期刊发现失败",
+                        "message": str(exc),
+                    }
+                },
+            )
+            return response
+        previews: dict[str, JournalDiscoveryPreview] = app.state.journal_previews
+        previews[preview.token] = preview
+        while len(previews) > 10:
+            previews.pop(next(iter(previews)))
+        response = templates.TemplateResponse(
+            request,
+            "settings.html",
+            settings_context(db, journal_preview=preview),
+        )
+        return _add_toast(response, "journal_found")
+
+    @app.post("/settings/journals/confirm")
+    def confirm_journal(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        db: DbSession,
+        token: str = Form(),
+    ) -> Response:
+        previews: dict[str, JournalDiscoveryPreview] = app.state.journal_previews
+        preview = previews.pop(token, None)
+        if preview is None:
+            return RedirectResponse("/settings?journal_error=expired", status_code=303)
         exists = db.scalar(
-            select(JournalSubscription).where(JournalSubscription.feed_url == feed_url.strip())
+            select(JournalSubscription).where(
+                JournalSubscription.homepage_url == preview.homepage_url
+            )
         )
         if not exists:
-            db.add(
-                JournalSubscription(
-                    name=name.strip() or urlparse(feed_url).hostname or "期刊",
-                    feed_url=feed_url.strip(),
-                    issn=issn.strip(),
-                )
+            subscription = JournalSubscription(
+                name=preview.name,
+                homepage_url=preview.homepage_url,
+                canonical_domain=preview.canonical_domain,
+                issn_online=preview.issn_online,
+                issn_print=preview.issn_print,
+                scope_kind=preview.scope_kind,
+                discovery_status="verified",
+                discovery_version=preview.version,
+                last_discovered_at=utcnow(),
+            )
+            db.add(subscription)
+            db.flush()
+            db.add_all(
+                [
+                    JournalEndpoint(
+                        journal_subscription_id=subscription.id,
+                        kind=endpoint.kind,
+                        url=endpoint.url,
+                        priority=endpoint.priority,
+                        last_validated_at=utcnow(),
+                    )
+                    for endpoint in preview.endpoints
+                ]
             )
             db.commit()
-        return RedirectResponse("/settings", status_code=303)
+            from .scheduler import run_source_update_in_background
+
+            background_tasks.add_task(run_source_update_in_background, "journals")
+        return _settings_fragment(request, db, "journal_added")
 
     @app.post("/settings/journals/{feed_id}/delete")
-    def delete_journal(feed_id: str, db: DbSession) -> Response:
+    def delete_journal(request: Request, feed_id: str, db: DbSession) -> Response:
         feed = db.get(JournalSubscription, feed_id)
         if feed:
             db.delete(feed)
             db.commit()
-        return RedirectResponse("/settings", status_code=303)
+        return _settings_fragment(request, db, "journal_removed")
 
     @app.post("/settings/schedules/{source}")
     def save_source_schedule(
+        request: Request,
         source: str,
         db: DbSession,
         interval_days: int = Form(),
@@ -398,10 +591,12 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             )
             schedule.updated_at = utcnow()
             db.commit()
-        return RedirectResponse("/settings", status_code=303)
+        return _settings_fragment(request, db, "schedule_saved")
 
     @app.post("/settings/sync/{source}")
-    def run_source_now(source: str, background_tasks: BackgroundTasks) -> Response:
+    def run_source_now(
+        request: Request, source: str, background_tasks: BackgroundTasks
+    ) -> Response:
         if source not in DEFAULT_SOURCE_INTERVALS:
             return HTMLResponse("未知来源", status_code=404)
         from .scheduler import run_source_update_in_background
@@ -411,7 +606,43 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             source,
             source == "scirate",
         )
-        return RedirectResponse(f"/settings?sync_started={source}", status_code=303)
+        response = _action_response(request, "sync_started", f"/settings?sync_started={source}")
+        if request.headers.get("HX-Request") == "true":
+            level, title, message = TOAST_MESSAGES["sync_started"]
+            response.headers["HX-Trigger"] = json.dumps(
+                {
+                    "app:toast": {"level": level, "title": title, "message": message},
+                    "app:sync-started": {
+                        "source": source,
+                        "after": utcnow().replace(tzinfo=None).isoformat(),
+                    },
+                }
+            )
+        return response
+
+    @app.get("/settings/sync/{source}/status", response_class=JSONResponse)
+    def source_sync_status(
+        source: str,
+        db: DbSession,
+        after: Annotated[datetime, Query()],
+    ) -> JSONResponse:
+        if source not in DEFAULT_SOURCE_INTERVALS:
+            return JSONResponse({"status": "unknown"}, status_code=404)
+        run = db.scalar(
+            select(SyncRun)
+            .where(SyncRun.source == source, SyncRun.started_at >= after)
+            .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+        )
+        if run is None or run.status == "running":
+            return JSONResponse({"status": "pending"})
+        return JSONResponse(
+            {
+                "status": run.status.value,
+                "message": run.error or "",
+                "items_seen": run.items_seen,
+                "items_created": run.items_created,
+            }
+        )
 
     return app
 

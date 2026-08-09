@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     serpapi_api_key: str = ""
     serpapi_monthly_query_budget: int = 240
-    semantic_scholar_api_key: str = ""
     deepseek_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"

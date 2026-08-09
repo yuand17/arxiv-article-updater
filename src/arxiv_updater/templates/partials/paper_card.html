@@ -13,7 +13,7 @@
     </div>
     <h2>{{ item.paper.title }}</h2>
     <p class="authors">{{ item.paper.authors_text or 'Authors unavailable' }}</p>
-    {% if view == 'weekly' and item.reasons %}
+    {% if view == 'featured' and item.reasons %}
     <div class="reason-row"><span>推荐理由</span>{% for reason in item.reasons %}<strong>{{ reason }}</strong>{% endfor %}</div>
     {% endif %}
     <div id="detail-{{ item.paper.id }}" class="paper-detail"></div>

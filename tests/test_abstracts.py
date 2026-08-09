@@ -17,7 +17,7 @@ def _paper(models, title: str, abstract: str = ""):
     )
 
 
-def test_missing_abstract_reuses_verified_local_title_author_and_year_match(app_client):
+def test_missing_abstract_does_not_use_fuzzy_title_match(app_client):
     _, session_factory, models = app_client
     with session_factory() as db:
         known = _paper(models, "Trusted title", "A trusted original abstract.")
@@ -26,9 +26,9 @@ def test_missing_abstract_reuses_verified_local_title_author_and_year_match(app_
         db.commit()
         enriched = enrich_paper_abstract(db, missing.id)
         assert enriched is not None
-        assert enriched.abstract == "A trusted original abstract."
-        assert enriched.abstract_source == "local-title"
-        assert enriched.abstract_status == "available"
+        assert enriched.abstract == ""
+        assert enriched.abstract_source == ""
+        assert enriched.abstract_status == "missing"
 
 
 def test_abstract_endpoint_records_interest_even_before_enrichment(app_client):
@@ -40,7 +40,8 @@ def test_abstract_endpoint_records_interest_even_before_enrichment(app_client):
         paper_id = paper.id
     response = client.post(f"/papers/{paper_id}/abstract")
     assert response.status_code == 200
-    assert "已加入可信来源补全队列" in response.text
+    assert "暂无摘要" in response.text
+    assert "不会模糊搜索或编造内容" in response.text
     with session_factory() as db:
         interaction = (
             db.query(models.Interaction)

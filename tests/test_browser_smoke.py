@@ -2,7 +2,7 @@ import re
 import socket
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import uvicorn
@@ -37,6 +37,33 @@ def test_local_feed_actions_and_mobile_layout():
             categories=["quant-ph"],
         )
         db.add(paper)
+        now = datetime.now(UTC)
+        db.add_all(
+            [
+                models.SyncRun(
+                    source="arxiv",
+                    status=models.SyncStatus.SUCCESS,
+                    started_at=now - timedelta(minutes=index),
+                    finished_at=now - timedelta(minutes=index) + timedelta(seconds=1),
+                    items_seen=index,
+                    items_created=index,
+                )
+                for index in range(25)
+            ]
+        )
+        db.add_all(
+            [
+                models.ApiUsage(
+                    service="deepseek",
+                    operation="featured_rerank",
+                    request_count=1,
+                    input_tokens=index,
+                    output_tokens=index,
+                    created_at=now - timedelta(minutes=index),
+                )
+                for index in range(25)
+            ]
+        )
         db.commit()
 
     port = _available_port()
@@ -68,21 +95,40 @@ def test_local_feed_actions_and_mobile_layout():
                 re.compile(r"\bis-saved\b")
             )
 
-            page.goto(f"http://127.0.0.1:{port}/settings?sync_started=scirate")
+            page.goto(f"http://127.0.0.1:{port}/settings?toast=sync_started")
             title = page.locator(".settings-heading-copy h1")
-            notice = page.locator(".sync-notice")
+            toast = page.locator(".toast", has_text="更新已启动")
             playwright.expect(title).to_be_visible()
-            playwright.expect(notice).to_be_visible()
+            playwright.expect(toast).to_be_visible()
             title_box = title.bounding_box()
-            notice_box = notice.bounding_box()
             assert title_box is not None and title_box["height"] < 100
-            assert notice_box is not None and notice_box["x"] > title_box["x"]
+            toast_box = toast.bounding_box()
+            assert toast_box is not None
+            assert toast_box["x"] + toast_box["width"] > 1200
+            assert toast_box["y"] + toast_box["height"] > 800
+
+            sync_panel = page.locator('[aria-label="最近同步历史"]')
+            usage_panel = page.locator('[aria-label="API 用量明细"]')
+            playwright.expect(sync_panel).to_be_visible()
+            playwright.expect(usage_panel).to_be_visible()
+            assert sync_panel.evaluate("element => element.scrollHeight > element.clientHeight")
+            assert usage_panel.evaluate("element => element.scrollHeight > element.clientHeight")
+            usage_start = usage_panel.evaluate("element => element.scrollTop")
+            sync_panel.scroll_into_view_if_needed()
+            sync_panel.hover()
+            page.mouse.wheel(0, 2400)
+            playwright.expect(sync_panel.locator("tbody tr")).to_have_count(25)
+            assert usage_panel.evaluate("element => element.scrollTop") == usage_start
+            usage_panel.scroll_into_view_if_needed()
+            usage_panel.hover()
+            page.mouse.wheel(0, 2400)
+            playwright.expect(usage_panel.locator("tbody tr")).to_have_count(25)
 
             page.set_viewport_size({"width": 390, "height": 844})
-            title_box = title.bounding_box()
-            notice_box = notice.bounding_box()
-            assert title_box is not None and notice_box is not None
-            assert notice_box["y"] > title_box["y"] + title_box["height"]
+            sync_box = sync_panel.bounding_box()
+            usage_box = usage_panel.bounding_box()
+            assert sync_box is not None and usage_box is not None
+            assert usage_box["y"] > sync_box["y"] + sync_box["height"]
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
             browser.close()
     finally:

@@ -17,7 +17,7 @@ DEFAULT_SOURCE_INTERVALS = {
     "arxiv": 1,
     "scirate": 3,
     "scholar": 7,
-    "journals": 7,
+    "journals": 1,
 }
 RETRY_DELAY = timedelta(hours=6)
 RATE_LIMIT_RETRY_DELAY = timedelta(minutes=30)
@@ -143,7 +143,11 @@ def run_due_jobs() -> None:
             except PreferenceUnavailableError:
                 db.rollback()
         if recommendation_is_due(db, now=now):
-            generate_recommendation_batch(db, now=now)
+            batch = generate_recommendation_batch(db, now=now)
+            if batch.status == "success":
+                from .services.retention import run_retention_cleanup
+
+                run_retention_cleanup(db, now=now)
 
 
 def run_source_update_in_background(

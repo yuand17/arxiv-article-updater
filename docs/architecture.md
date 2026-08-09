@@ -1,37 +1,39 @@
-# 本地单用户架构
+# 本地三日论文更新器架构
 
 ```mermaid
 flowchart TD
-    D["桌面快捷方式"] --> H{"/health"}
-    H -->|"未运行"| A["FastAPI + APScheduler"]
-    H -->|"已运行"| B["浏览器页面"]
-    A --> S["按来源到期检查"]
-    S --> X["arXiv / SciRate / Scholar / 期刊"]
-    X --> E["可信 Abstract 补全"]
-    E --> DB[("SQLite")]
-    B --> I["查看 Abstract / 收藏 / 全文 / 不感兴趣"]
-    I --> DB
-    A --> P["每周 DeepSeek 偏好画像"]
-    P --> R["每三天推荐批次"]
+    C["Windows 托盘控制器"] --> W["FastAPI + APScheduler"]
+    C --> B["浏览器阅读界面"]
+    W --> S["按来源独立调度"]
+    S --> X["arXiv / SciRate / Scholar / 用户期刊"]
+    X --> F["去重、文章类型与物理筛选"]
+    F --> DB[("SQLite")]
+    DB --> L["BM25 本地粗排"]
+    L --> R["三日 DeepSeek 精排或本地回退"]
     R --> DB
+    B --> I["Abstract / 全文 / 收藏 / 不感兴趣"]
+    I --> DB
+    R --> K["9 天无互动数据清理"]
+    K --> DB
 ```
 
 ## 运行边界
 
-- 只有本机 SQLite；配置会拒绝 PostgreSQL 等远端 URL。
-- Uvicorn 只允许 `127.0.0.1`、`::1` 或 `localhost`，不暴露局域网或公网。
-- `arxiv-updater serve` 是唯一常驻进程：网页与 APScheduler 在同一个进程中运行。
-- 页面请求只读论文库或记录轻量互动；抓取、补摘要、偏好画像和推荐生成在后台任务中执行。
+- 只支持本机 SQLite，Uvicorn 只监听 `127.0.0.1`、`::1` 或 `localhost`。
+- 开发模式使用 `arxiv-updater serve`；日常使用由 `.pyw` 托盘控制器在同一生命周期内拥有 Uvicorn 和调度器。
+- Windows 互斥量保证单实例，本机 IPC 只处理 `OPEN` 命令；控制器不会结束或接管未知端口进程。
+- API key 只从未跟踪的 `.env` 读取，不写入数据库、日志、页面或测试。
 
-## 数据库
+## 主要数据流
 
-- `papers` 与 `paper_sources` 保存去重后的论文和来源记录。
-- `interactions` 是单用户信号，且 `(paper_id, kind)` 唯一：`ABSTRACT_VIEWED`、`SAVED`、`FULLTEXT`、`DISMISSED`。
-- `app_preferences` 是单例，保存手工兴趣及 DeepSeek 生成的可审计 JSON 画像。
-- `source_schedules` 保存每个来源的间隔、成功/失败状态与下一次到期时间。
-- `recommendation_batches`、`recommendation_items` 保存可复现的三日推荐结果和理由。
-- `api_usage` 只记录服务与操作级用量，不含用户标识或 API key。
+- `papers` 与 `paper_sources` 保存去重论文和各来源标识；期刊论文同时保存文章类型和物理分类证据。
+- `journal_subscriptions` 保存用户理解的名称和官网，`journal_endpoints` 保存自动发现并验证的技术端点。
+- `seen_source_items` 在完整论文被过滤或清理后保留轻量来源身份，避免旧 feed 或 Scholar 条目反复入库。
+- `interactions` 保存四种单用户信号：`ABSTRACT_VIEWED`、`SAVED`、`FULLTEXT`、`DISMISSED`。
+- `app_preferences.featured_paper_count` 是三天精选篇数的唯一来源，默认 66。
+- `recommendation_batches` 记录三日窗口、候选数、短名单数、精排成功/回退数、来源统计和算法版本；`recommendation_items` 只保存最终选中的论文。
+- `cleanup_runs`、`sync_runs` 和 `api_usage` 提供可审计运行记录，API 用量不含密钥。
 
-## 安全与恢复
+## 恢复与生命周期
 
-API key 只从未跟踪的 `.env` 读取，不能写入数据库、日志、测试或 Git 历史。每次发现 SQLite migration 尚未执行前，程序先调用 SQLite backup API 生成完整备份，并通过 `PRAGMA integrity_check` 校验；迁移失败时停止启动。
+Alembic 升级前使用 SQLite backup API 创建一致性备份并执行完整性检查。每个成功三日批次之后，清理任务保护所有有互动论文和最近三个成功批次，只删除超过 9 天的无互动论文；清理写入已见记录并在一个事务中完成。

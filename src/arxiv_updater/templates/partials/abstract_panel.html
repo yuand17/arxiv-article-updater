@@ -3,7 +3,7 @@
   {% if paper.abstract %}
     <p>{{ paper.abstract }}</p>
   {% else %}
-    <p class="muted">暂未找到 Abstract，已加入可信来源补全队列。稍后刷新页面即可查看结果。</p>
+    <p class="muted">暂无摘要。程序只会检查已明确关联的 arXiv 或出版社元数据，不会模糊搜索或编造内容。</p>
   {% endif %}
   <div class="external-links">
     {% if paper.pdf_url or paper.canonical_url %}<a href="/papers/{{ paper.id }}/fulltext" target="_blank" rel="noopener">阅读全文 ↗</a>{% endif %}

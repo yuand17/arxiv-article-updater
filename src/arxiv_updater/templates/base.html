@@ -7,6 +7,7 @@
     <link rel="icon" href="{{ url_for('static', path='icons/arxiv-updater.ico') }}" sizes="any">
     <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=20260809-author-list">
     <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+    <script src="{{ url_for('static', path='app.js') }}?v=20260809-three-day" defer></script>
   </head>
   <body>
     <header class="topbar">
@@ -15,7 +16,7 @@
         <span class="brand-label">Updater</span>
       </a>
       <nav class="desktop-nav" aria-label="主要导航">
-        <a href="/?view=weekly">本周精选</a>
+        <a href="/?view=featured">三天精选</a>
         <a href="/?view=all">全部更新</a>
         <a href="/?view=saved">收藏</a>
         <a href="/settings">设置</a>
@@ -23,5 +24,6 @@
       <span class="local-badge">仅本机</span>
     </header>
     {% block body %}{% endblock %}
+    <div id="toast-region" class="toast-region" aria-label="操作通知" aria-live="polite"></div>
   </body>
 </html>

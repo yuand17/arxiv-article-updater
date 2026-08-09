@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import (
@@ -11,6 +11,8 @@ from ..models import (
     RecommendationBatch,
     RecommendationItem,
 )
+from .recommendations import RANKING_VERSION
+from .retention import UNINTERACTED_RETENTION_DAYS
 
 
 @dataclass(slots=True)
@@ -76,39 +78,13 @@ def _filter_papers(
     return filtered
 
 
-def _fallback_weekly(papers: list[Paper], now: datetime) -> list[tuple[Paper, float, list[str]]]:
-    """A deterministic offline fallback until a DeepSeek recommendation batch exists."""
-
-    ranked: list[tuple[Paper, float, list[str]]] = []
-    for paper in papers:
-        age_days = max(
-            0.0, (now - _aware(paper.published_at or paper.discovered_at)).total_seconds() / 86400
-        )
-        freshness = max(0.0, 10.0 - age_days)
-        sources = _source_names(paper)
-        score = freshness
-        reasons = ["近期进入论文库"]
-        if "scholar" in sources:
-            score += 4
-            reasons.append("重点作者")
-        if "journal" in sources:
-            score += 3
-            reasons.append("重点期刊")
-        if paper.scites_count:
-            score += min(3.0, paper.scites_count / 4)
-            reasons.append("SciRate 热度")
-        ranked.append((paper, score, reasons[:2]))
-    return sorted(
-        ranked,
-        key=lambda item: (item[1], _aware(item[0].discovered_at), item[0].id),
-        reverse=True,
-    )
-
-
 def _latest_batch_items(db: Session) -> list[RecommendationItem]:
     batch = db.scalar(
         select(RecommendationBatch)
-        .where(RecommendationBatch.status == "success")
+        .where(
+            RecommendationBatch.status == "success",
+            RecommendationBatch.ranking_version == RANKING_VERSION,
+        )
         .order_by(RecommendationBatch.generated_at.desc())
     )
     if not batch:
@@ -129,18 +105,18 @@ def _latest_batch_items(db: Session) -> list[RecommendationItem]:
 def rank_papers(
     db: Session,
     *,
-    view: str = "weekly",
+    view: str = "featured",
     query: str = "",
     category: str = "",
     limit: int = 100,
     offset: int = 0,
     now: datetime | None = None,
 ) -> list[RankedPaper]:
-    """Return a local-reader view; only ``weekly`` may use recommendation order."""
+    """Return a local-reader view; only ``featured`` uses recommendation order."""
 
     now = now or datetime.now(UTC)
     interactions = _interaction_map(db)
-    if view == "weekly":
+    if view == "featured":
         batch_items = _latest_batch_items(db)
         if batch_items:
             results = [
@@ -151,7 +127,7 @@ def rank_papers(
                     interaction_kinds=interactions.get(item.paper_id, set()),
                 )
                 for item in batch_items
-                if _matches_view(item.paper, "weekly", interactions.get(item.paper_id, set()))
+                if _matches_view(item.paper, "featured", interactions.get(item.paper_id, set()))
                 and (not category or category in (item.paper.categories or []))
                 and (
                     not query
@@ -159,21 +135,17 @@ def rank_papers(
                 )
             ]
             return results[offset : offset + limit]
+        return []
 
-    cutoff_days = 7 if view == "weekly" else 30
-    cutoff = now - timedelta(days=cutoff_days)
-    date_filter = (
-        or_(Paper.published_at >= cutoff, Paper.discovered_at >= cutoff)
-        if view == "weekly"
-        else Paper.discovered_at >= cutoff
+    query_statement = select(Paper).options(
+        selectinload(Paper.sources), selectinload(Paper.interactions)
     )
-    papers = list(
-        db.scalars(
-            select(Paper)
-            .options(selectinload(Paper.sources), selectinload(Paper.interactions))
-            .where(date_filter)
-            .order_by(Paper.discovered_at.desc(), Paper.id.desc())
+    if view != "saved":
+        query_statement = query_statement.where(
+            Paper.discovered_at >= now - timedelta(days=UNINTERACTED_RETENTION_DAYS)
         )
+    papers = list(
+        db.scalars(query_statement.order_by(Paper.discovered_at.desc(), Paper.id.desc()))
         .unique()
         .all()
     )
@@ -194,17 +166,6 @@ def rank_papers(
             ),
             reverse=True,
         )
-    if view == "weekly":
-        fallback = _fallback_weekly(filtered, now)
-        return [
-            RankedPaper(
-                paper=paper,
-                score=score,
-                reasons=reasons,
-                interaction_kinds=interactions.get(paper.id, set()),
-            )
-            for paper, score, reasons in fallback[offset : offset + limit]
-        ]
     return [
         RankedPaper(paper=paper, interaction_kinds=interactions.get(paper.id, set()))
         for paper in filtered[offset : offset + limit]

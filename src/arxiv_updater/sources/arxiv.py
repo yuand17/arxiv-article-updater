@@ -16,6 +16,7 @@ ARXIV_ID_PATTERN = re.compile(r"(?:abs/)?([^/]+?)(?:v\d+)?$")
 ARXIV_CACHE_MAX_AGE = timedelta(minutes=5)
 ARXIV_REQUEST_ATTEMPTS = 3
 ARXIV_MAX_RETRY_AFTER_SECONDS = 30.0
+ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
 
 
 def normalize_arxiv_id(value: str) -> str:
@@ -79,14 +80,16 @@ class ArxivAdapter(SourceAdapter):
         self,
         settings: Settings | None = None,
         client: httpx.Client | None = None,
-        max_results: int = 500,
+        max_results: int | None = None,
         page_size: int = 100,
+        max_pages: int = 100,
         cache: DailyResponseCache | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
         self.max_results = max_results
-        self.page_size = min(page_size, max_results)
+        self.page_size = min(page_size, max_results) if max_results else page_size
+        self.max_pages = max_pages
         self.cache = cache or DailyResponseCache("arxiv")
         self._last_network_request: float | None = None
 
@@ -101,7 +104,7 @@ class ArxivAdapter(SourceAdapter):
                 if elapsed < 3.0:
                     time.sleep(3.0 - elapsed)
             response = self.client.get(
-                "https://export.arxiv.org/api/query",
+                ARXIV_QUERY_URL,
                 params={
                     "search_query": category_query,
                     "start": start,
@@ -133,8 +136,15 @@ class ArxivAdapter(SourceAdapter):
             f"cat:{category}" for category in self.settings.arxiv_categories
         )
         candidates: list[PaperCandidate] = []
-        for start in range(0, self.max_results, self.page_size):
-            count = min(self.page_size, self.max_results - start)
+        start = 0
+        for _page_number in range(self.max_pages):
+            if self.max_results is not None and start >= self.max_results:
+                break
+            count = (
+                min(self.page_size, self.max_results - start)
+                if self.max_results is not None
+                else self.page_size
+            )
             page = parse_arxiv_feed(self._fetch_page(category_query, start, count))
             candidates.extend(
                 candidate
@@ -161,4 +171,5 @@ class ArxivAdapter(SourceAdapter):
                 )
             ):
                 break
+            start += count
         return candidates

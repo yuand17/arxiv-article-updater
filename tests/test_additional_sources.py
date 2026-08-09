@@ -3,6 +3,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from arxiv_updater.services.article_classification import classify_journal_candidate
 from arxiv_updater.sources.cache import DailyResponseCache
 from arxiv_updater.sources.journals import JournalFeed, parse_journal_feed
 from arxiv_updater.sources.scholar import (
@@ -146,10 +147,20 @@ def test_scirate_manual_fetch_uses_human_chrome_after_cloudflare(tmp_path):
     assert calls == [("https://scirate.com/?range=3", profile, 42)]
 
 
-def test_parse_journal_feed_filters_corrections():
-    feed = JournalFeed("Example Journal", "https://example.com/rss", "0000-0000")
+def test_journal_classification_filters_corrections_after_parsing():
+    feed = JournalFeed("Physical Review Letters", "https://example.com/rss", "0000-0000")
     papers = parse_journal_feed((FIXTURES / "journal.rss").read_text(encoding="utf-8"), feed)
-    assert len(papers) == 1
+    assert len(papers) == 2
     assert papers[0].doi == "10.1103/example.42"
     assert papers[0].authors == ["Alice Physicist"]
     assert papers[0].abstract == "We report a controlled observation."
+    results = [
+        classify_journal_candidate(
+            paper,
+            journal_name="Physical Review Letters",
+            scope_kind="physics",
+        )
+        for paper in papers
+    ]
+    assert results[0].accepted is True
+    assert results[1].is_original_research is False

@@ -126,3 +126,41 @@ def test_arxiv_adapter_retries_rate_limit(tmp_path, monkeypatch):
 
     assert calls == 2
     assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+
+
+def test_arxiv_adapter_pages_past_five_hundred_until_time_boundary(
+    tmp_path, monkeypatch
+):
+    starts: list[int] = []
+
+    def atom_page(start: int, *, old: bool) -> str:
+        date = "2026-07-20T10:00:00Z" if old else "2026-07-30T10:00:00Z"
+        entries = "".join(
+            f"""<entry><id>http://arxiv.org/abs/2607.{start + index:05d}v1</id>
+            <updated>{date}</updated><published>{date}</published>
+            <title>Quantum paper {start + index}</title><summary>Quantum result</summary>
+            <author><name>Alice Example</name></author><category term="quant-ph" />
+            <link rel="alternate" href="https://arxiv.org/abs/2607.{start + index:05d}" />
+            </entry>"""
+            for index in range(100)
+        )
+        return f'<feed xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        start = int(request.url.params["start"])
+        starts.append(start)
+        return httpx.Response(200, text=atom_page(start, old=start >= 600))
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        page_size=100,
+        max_pages=10,
+        cache=DailyResponseCache("arxiv-boundary-test", tmp_path),
+    )
+
+    papers = adapter.fetch(datetime(2026, 7, 28, tzinfo=UTC))
+
+    assert len(papers) == 600
+    assert starts == [0, 100, 200, 300, 400, 500, 600]

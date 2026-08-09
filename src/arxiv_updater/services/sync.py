@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from ..config import get_settings
 from ..datetime_utils import as_utc
@@ -11,6 +11,7 @@ from ..models import (
     JournalSubscription,
     Paper,
     PaperSource,
+    SeenSourceItem,
     SyncRun,
     SyncStatus,
     TrackedAuthor,
@@ -18,9 +19,10 @@ from ..models import (
 )
 from ..sources.arxiv import ArxivAdapter
 from ..sources.base import PaperCandidate
-from ..sources.journals import DEFAULT_JOURNAL_FEEDS, JournalAdapter, JournalFeed
+from ..sources.journals import JournalAdapter, JournalFeed
 from ..sources.scholar import ScholarAdapter
 from ..sources.scirate import SciRateAdapter
+from .article_classification import classify_journal_candidate
 from .papers import upsert_paper
 
 
@@ -44,18 +46,7 @@ def _build_adapter(db: Session, name: str, *, allow_browser_challenge: bool = Fa
     if name == "arxiv":
         return ArxivAdapter()
     if name == "journals":
-        custom_feeds = db.scalars(
-            select(JournalSubscription).where(JournalSubscription.is_active.is_(True))
-        ).all()
-        feeds = [
-            *DEFAULT_JOURNAL_FEEDS,
-            *[
-                JournalFeed(feed.name, feed.feed_url, feed.issn)
-                for feed in custom_feeds
-                if feed.feed_url not in {default.url for default in DEFAULT_JOURNAL_FEEDS}
-            ],
-        ]
-        return JournalAdapter(feeds=feeds)
+        raise ValueError("Journal subscriptions are synchronized independently")
     if name == "scirate":
         return SciRateAdapter(allow_browser_challenge=allow_browser_challenge)
     if name == "scholar":
@@ -65,10 +56,14 @@ def _build_adapter(db: Session, name: str, *, allow_browser_challenge: bool = Fa
         authors = db.scalars(
             select(TrackedAuthor)
             .order_by(TrackedAuthor.last_synced_at.asc().nullsfirst())
-            .limit(remaining)
         ).all()
         if not authors:
-            raise RuntimeError("No tracked authors or the SerpAPI monthly budget is exhausted")
+            raise RuntimeError("No tracked authors")
+        if remaining < len(authors):
+            raise RuntimeError(
+                f"SerpAPI budget is insufficient: {remaining} requests remain for "
+                f"{len(authors)} tracked authors"
+            )
         return ScholarAdapter([author.scholar_author_id for author in authors])
     raise ValueError(f"Unknown source: {name}")
 
@@ -117,6 +112,159 @@ def _apply_scirate(
     return len(sorted_records), created
 
 
+def _record_seen(
+    db: Session,
+    candidate: PaperCandidate,
+    *,
+    outcome: str,
+    reason: str,
+    version: str,
+    paper_id: str | None = None,
+) -> SeenSourceItem:
+    seen = db.scalar(
+        select(SeenSourceItem).where(
+            SeenSourceItem.source == candidate.source,
+            SeenSourceItem.external_id == candidate.external_id,
+        )
+    )
+    if seen is None:
+        seen = SeenSourceItem(
+            source=candidate.source,
+            external_id=candidate.external_id,
+            doi=candidate.doi,
+            outcome=outcome,
+        )
+        db.add(seen)
+    seen.last_seen_at = utcnow()
+    seen.doi = candidate.doi or seen.doi
+    seen.outcome = outcome
+    seen.reason = reason[:1000]
+    seen.classification_version = version
+    seen.paper_id = paper_id
+    return seen
+
+
+def _seen_item_blocks(db: Session, candidate: PaperCandidate) -> bool:
+    if candidate.source not in {"scholar", "journal"}:
+        return False
+    seen = db.scalar(
+        select(SeenSourceItem).where(
+            SeenSourceItem.source == candidate.source,
+            SeenSourceItem.external_id == candidate.external_id,
+        )
+    )
+    if seen and seen.paper_id is None and seen.outcome in {
+        "cleaned",
+        "nonresearch",
+        "nonphysics",
+    }:
+        seen.last_seen_at = utcnow()
+        return True
+    return False
+
+
+def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
+    subscriptions = db.scalars(
+        select(JournalSubscription)
+        .options(selectinload(JournalSubscription.endpoints))
+        .where(JournalSubscription.is_active.is_(True))
+        .order_by(JournalSubscription.name)
+    ).all()
+    total_seen = total_created = 0
+    errors: list[str] = []
+    for subscription in subscriptions:
+        subscription.last_attempt_at = utcnow()
+        db.commit()
+        last_success = as_utc(subscription.last_success_at)
+        since = (
+            last_success - timedelta(days=1)
+            if last_success is not None
+            else datetime.now(UTC) - timedelta(days=14)
+        )
+        feeds = [
+            JournalFeed(
+                subscription.name,
+                endpoint.url,
+                subscription.issn_online or subscription.issn_print,
+                endpoint.kind,
+            )
+            for endpoint in sorted(subscription.endpoints, key=lambda item: item.priority)
+            if endpoint.kind in {"rss", "atom", "crossref"}
+        ]
+        try:
+            candidates = JournalAdapter(feeds=feeds).fetch(since)
+            scanned = imported = nonresearch = nonphysics = 0
+            for candidate in candidates:
+                scanned += 1
+                candidate.metadata["journal_subscription_id"] = subscription.id
+                result = classify_journal_candidate(
+                    candidate,
+                    journal_name=subscription.name,
+                    scope_kind=subscription.scope_kind,
+                )
+                existing_seen = db.scalar(
+                    select(SeenSourceItem).where(
+                        SeenSourceItem.source == candidate.source,
+                        SeenSourceItem.external_id == candidate.external_id,
+                    )
+                )
+                if (
+                    existing_seen
+                    and existing_seen.paper_id is None
+                    and existing_seen.outcome in {"cleaned", "nonresearch", "nonphysics"}
+                ):
+                    existing_seen.last_seen_at = utcnow()
+                    continue
+                if not result.accepted:
+                    nonresearch += int(not result.is_original_research)
+                    nonphysics += int(result.is_original_research and not result.is_physics)
+                    _record_seen(
+                        db,
+                        candidate,
+                        outcome=result.outcome,
+                        reason=result.reason,
+                        version=result.version,
+                    )
+                    continue
+                upserted = upsert_paper(db, candidate)
+                paper = upserted.paper
+                paper.document_type = result.document_type
+                paper.is_original_research = result.is_original_research
+                paper.is_physics = result.is_physics
+                paper.physics_confidence = result.physics_confidence
+                paper.classification_reason = result.reason
+                paper.classification_source = result.source
+                paper.classification_version = result.version
+                paper.classified_at = result.classified_at
+                imported += int(upserted.created)
+                _record_seen(
+                    db,
+                    candidate,
+                    outcome="imported" if upserted.created else "duplicate",
+                    reason=result.reason,
+                    version=result.version,
+                    paper_id=paper.id,
+                )
+            subscription.last_success_at = utcnow()
+            subscription.last_error = ""
+            subscription.last_items_seen = scanned
+            subscription.last_items_imported = imported
+            subscription.last_nonresearch_filtered = nonresearch
+            subscription.last_nonphysics_filtered = nonphysics
+            db.commit()
+            total_seen += scanned
+            total_created += imported
+        except Exception as exc:
+            db.rollback()
+            current = db.get(JournalSubscription, subscription.id)
+            if current:
+                current.last_error = f"{type(exc).__name__}: {exc}"[:2000]
+                current.last_attempt_at = utcnow()
+                db.commit()
+            errors.append(f"{subscription.name}: {type(exc).__name__}")
+    return total_seen, total_created, errors
+
+
 def sync_sources(
     db: Session, source: str = "all", *, allow_browser_challenge: bool = False
 ) -> list[SyncRun]:
@@ -138,22 +286,39 @@ def sync_sources(
             else datetime.now(UTC) - timedelta(days=14)
         )
         try:
-            adapter = _build_adapter(
-                db,
-                name,
-                allow_browser_challenge=allow_browser_challenge and name == "scirate",
-            )
-            candidates = adapter.fetch(since)
+            if name == "journals":
+                run.items_seen, run.items_created, journal_errors = _sync_journals(db)
+                if journal_errors:
+                    run.error = "Partial sync: " + "; ".join(journal_errors)
+                adapter = None
+                candidates = []
+            else:
+                adapter = _build_adapter(
+                    db,
+                    name,
+                    allow_browser_challenge=allow_browser_challenge and name == "scirate",
+                )
+                candidates = adapter.fetch(since)
             if isinstance(adapter, SciRateAdapter):
                 run.items_seen, run.items_created = _apply_scirate(db, adapter, candidates)
-            else:
+            elif adapter is not None:
                 created = 0
                 for candidate in candidates:
-                    created += int(upsert_paper(db, candidate).created)
+                    if _seen_item_blocks(db, candidate):
+                        continue
+                    upserted = upsert_paper(db, candidate)
+                    created += int(upserted.created)
+                    if candidate.source == "scholar":
+                        _record_seen(
+                            db,
+                            candidate,
+                            outcome="imported" if upserted.created else "duplicate",
+                            reason="tracked_author_result",
+                            version="source-sync-v1",
+                            paper_id=upserted.paper.id,
+                        )
                 run.items_seen = len(candidates)
                 run.items_created = created
-            if isinstance(adapter, JournalAdapter) and adapter.errors:
-                run.error = "Partial sync: " + "; ".join(adapter.errors)
             if isinstance(adapter, ScholarAdapter):
                 author_map = {
                     author.scholar_author_id: author
@@ -175,9 +340,6 @@ def sync_sources(
                         request_count=len(adapter.author_ids),
                     )
                 )
-                from .abstracts import enrich_missing_scholar_abstracts
-
-                enrich_missing_scholar_abstracts(db)
             run.status = SyncStatus.SUCCESS
         except Exception as exc:
             db.rollback()

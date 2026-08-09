@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% set titles = {
-  'weekly': ('本周精选', '最近七天的论文，按你的偏好批次排序'),
+  'featured': ('三天精选', '最近三天的新论文，按研究偏好、近期性和来源信号排序'),
   'all': ('全部更新', '最近三十天进入论文库的内容，严格按入库时间倒序'),
   'authors': ('重点作者', '来自正在追踪的 Google Scholar 作者'),
   'scirate': ('SciRate 热门', '过去三天量子物理社区高票论文'),
   'arxiv': ('arXiv 更新', 'quant-ph 与已配置 condensed matter 分类'),
-  'journals': ('重点期刊', 'Nature、Nature Physics 与 PRL'),
+  'journals': ('重点期刊', '来自你主动添加并通过筛选的期刊'),
   'saved': ('我的收藏', '留给之后认真阅读的论文')
 } %}
 {% block body %}
@@ -20,7 +20,7 @@
   </section>
 
   <nav class="view-tabs" aria-label="论文来源">
-    <a class="{{ 'active' if view == 'weekly' }}" href="/?view=weekly">本周精选</a>
+    <a class="{{ 'active' if view == 'featured' }}" href="/?view=featured">三天精选</a>
     <a class="{{ 'active' if view == 'all' }}" href="/?view=all">全部更新</a>
     <a class="{{ 'active' if view == 'authors' }}" href="/?view=authors">重点作者</a>
     <a class="{{ 'active' if view == 'scirate' }}" href="/?view=scirate">SciRate</a>
@@ -53,11 +53,11 @@
     {% endfor %}
   </section>
 
-  {% if weekly_shortfall %}
-  <p class="muted">当前去重并排除“不感兴趣”后的候选不足 50 篇，已展示全部 {{ ranked|length }} 篇。</p>
+  {% if featured_shortfall %}
+  <p class="muted">最近三天合格候选不足 {{ featured_target }} 篇，已展示全部 {{ ranked|length }} 篇；未使用更早论文补足。</p>
   {% endif %}
 
-  {% if view == 'all' and has_more %}
+  {% if view != 'featured' and has_more %}
   <div class="load-more" id="load-more">
     <button class="secondary-button" hx-get="/papers?view={{ view }}&q={{ q|urlencode }}&category={{ category|urlencode }}&offset={{ next_offset }}" hx-target=".paper-list" hx-swap="beforeend">加载更多（每次 100 篇）</button>
   </div>

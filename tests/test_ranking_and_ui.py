@@ -1,7 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
+from arxiv_updater.config import Settings
 from arxiv_updater.services.interactions import record_interaction
 from arxiv_updater.services.ranking import rank_papers
+from arxiv_updater.services.recommendations import generate_recommendation_batch
 
 
 def _paper(
@@ -45,16 +49,20 @@ def test_all_updates_are_strictly_discovered_time_descending(app_client):
         assert all(not item.reasons for item in ranked)
 
 
-def test_weekly_fallback_can_use_source_signals_but_all_view_cannot(app_client):
+def test_featured_view_uses_persisted_batch_but_all_view_has_no_reasons(app_client):
     _, session_factory, models = app_client
     with session_factory() as db:
         plain = _paper(models, "Plain preprint", 1, "arxiv")
         hot = _paper(models, "Hot journal quantum result", 1, "journal", scites=12)
         db.add_all([plain, hot])
+        db.add(models.AppPreferences(id=1, manual_interests="quantum", featured_paper_count=2))
         db.commit()
-        weekly = rank_papers(db, view="weekly", now=datetime.now(UTC))
-        assert weekly[0].paper.id == hot.id
-        assert "重点期刊" in weekly[0].reasons
+        generate_recommendation_batch(db, settings=Settings(deepseek_api_key=""))
+        featured = rank_papers(db, view="featured", now=datetime.now(UTC))
+        all_items = rank_papers(db, view="all", now=datetime.now(UTC))
+        assert featured
+        assert all(featured_item.reasons for featured_item in featured)
+        assert all(not item.reasons for item in all_items)
 
 
 def test_scirate_view_is_sorted_by_vote_count(app_client):
@@ -81,6 +89,22 @@ def test_single_reader_dismissal_hides_and_save_is_idempotent(app_client):
         record_interaction(db, paper.id, models.InteractionKind.DISMISSED)
         assert rank_papers(db, view="all") == []
         assert len(paper.interactions) == 2
+
+
+def test_interacted_old_paper_leaves_active_views_but_remains_in_saved_history(app_client):
+    _, session_factory, models = app_client
+    now = datetime.now(UTC)
+    with session_factory() as db:
+        paper = _paper(models, "Old saved history", 12, "arxiv")
+        db.add(paper)
+        db.commit()
+        record_interaction(db, paper.id, models.InteractionKind.SAVED)
+
+        assert rank_papers(db, view="all", now=now) == []
+        assert rank_papers(db, view="arxiv", now=now) == []
+        assert [item.paper.id for item in rank_papers(db, view="saved", now=now)] == [
+            paper.id
+        ]
 
 
 def test_feed_actions_need_no_login_and_show_raw_abstract(app_client):
@@ -140,3 +164,23 @@ def test_all_updates_loads_more_than_three_hundred_in_pages_of_one_hundred(app_c
     assert second.text.count('class="paper-card"') == 100
     assert third.text.count('class="paper-card"') == 100
     assert "hx-swap-oob" in second.text
+
+
+@pytest.mark.parametrize(
+    ("view", "source"),
+    [("authors", "scholar"), ("arxiv", "arxiv"), ("journals", "journal")],
+)
+def test_each_source_view_has_stable_hundred_item_pagination(app_client, view, source):
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        db.add_all(
+            [_paper(models, f"{view} paper {index}", 1, source) for index in range(101)]
+        )
+        db.commit()
+
+    first = client.get(f"/?view={view}")
+    second = client.get(f"/papers?view={view}&offset=100")
+
+    assert first.status_code == second.status_code == 200
+    assert first.text.count('class="paper-card"') == 100
+    assert second.text.count('class="paper-card"') == 1

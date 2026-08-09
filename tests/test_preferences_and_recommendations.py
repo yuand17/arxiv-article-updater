@@ -60,6 +60,24 @@ class FakeRecommendationProvider(RecommendationProvider):
         return RerankResult(items=items, model="fake-reranker", input_tokens=30, output_tokens=20)
 
 
+class ConcurrentWriteProvider(FakeRecommendationProvider):
+    def __init__(self, session_factory, models) -> None:
+        super().__init__()
+        self.session_factory = session_factory
+        self.models = models
+
+    def rerank(self, preferences, papers) -> RerankResult:
+        with self.session_factory() as concurrent:
+            concurrent.add(
+                self.models.ApiUsage(
+                    service="test",
+                    operation="concurrent_during_rerank",
+                )
+            )
+            concurrent.commit()
+        return super().rerank(preferences, papers)
+
+
 def _paper(models, index: int, *, days_old: int = 1):
     return models.Paper(
         title=f"Quantum candidate {index}",
@@ -101,11 +119,15 @@ def test_preference_profile_uses_title_authors_abstract_and_reading_signals(app_
         assert db.query(models.ApiUsage).filter_by(operation="preference_profile").count() == 1
 
 
-def test_recommendation_batch_scores_all_candidates_in_chunks_and_keeps_fifty(app_client):
+def test_recommendation_batch_reranks_shortlist_and_keeps_configured_count(app_client):
     _, session_factory, models = app_client
     provider = FakeRecommendationProvider(include_unknown=True)
     with session_factory() as db:
-        db.add(models.AppPreferences(id=1, manual_interests="quantum"))
+        db.add(
+            models.AppPreferences(
+                id=1, manual_interests="quantum", featured_paper_count=17
+            )
+        )
         papers = [_paper(models, index) for index in range(55)]
         db.add_all(papers)
         db.commit()
@@ -115,13 +137,13 @@ def test_recommendation_batch_scores_all_candidates_in_chunks_and_keeps_fifty(ap
             settings=Settings(deepseek_api_key="test-key"),
         )
         items = sorted(batch.items, key=lambda item: item.position)
-        assert len(items) == 55
+        assert len(items) == 17
         assert len(provider.calls) == 2
         assert all(len(call) <= 50 for call in provider.calls)
         assert items[0].reason.startswith("匹配")
         assert batch.fallback_used is False
-        assert len(rank_papers(db, view="weekly")) >= 50
-        assert db.query(models.ApiUsage).filter_by(operation="recommendation_rerank").count() == 1
+        assert len(rank_papers(db, view="featured")) == 17
+        assert db.query(models.ApiUsage).filter_by(operation="featured_rerank").count() == 1
 
 
 def test_missing_deepseek_key_generates_deterministic_fallback_batch(app_client):
@@ -132,9 +154,32 @@ def test_missing_deepseek_key_generates_deterministic_fallback_batch(app_client)
         db.commit()
         batch = generate_recommendation_batch(db, settings=Settings(deepseek_api_key=""))
         assert batch.fallback_used is True
-        assert batch.model == "local-fallback"
+        assert batch.model == "local-bm25"
         assert len(batch.items) == 3
-        assert all("本地回退" in item.reason for item in batch.items)
+        assert all("本地粗排" in item.reason for item in batch.items)
+
+
+def test_rerank_does_not_hold_a_sqlite_write_lock(app_client):
+    _, session_factory, models = app_client
+    provider = ConcurrentWriteProvider(session_factory, models)
+    with session_factory() as db:
+        db.add(models.AppPreferences(id=1, manual_interests="quantum"))
+        db.add(_paper(models, 1))
+        db.commit()
+
+        batch = generate_recommendation_batch(
+            db,
+            provider=provider,
+            settings=Settings(deepseek_api_key="test-key"),
+        )
+
+        assert batch.status == "success"
+        assert (
+            db.query(models.ApiUsage)
+            .filter_by(operation="concurrent_during_rerank")
+            .count()
+            == 1
+        )
 
 
 def test_recommendation_rerank_respects_the_monthly_deepseek_token_budget(app_client):

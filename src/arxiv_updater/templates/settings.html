@@ -8,53 +8,16 @@
       <h1>设置</h1>
       <p>所有数据与互动记录只保存在这台电脑的 SQLite 论文库中。</p>
     </div>
-    {% if sync_started == 'scirate' %}
-    <p class="success-note sync-notice">SciRate 更新已启动。如果网站要求 Cloudflare 真人验证，将弹出一个专用 Chrome 窗口；请在窗口中完成验证，成功后窗口会自动关闭并继续导入。</p>
-    {% elif sync_started %}
-    <p class="success-note sync-notice">{{ sync_started }} 更新已启动，请稍后刷新本页查看结果。</p>
-    {% endif %}
   </header>
-
-  <div class="settings-grid">
-    <section class="settings-card">
-      <span class="step-number">01</span>
-      <h2>我的研究偏好</h2>
-      <p>填写兴趣作为冷启动提示。DeepSeek 每周根据论文标题、作者、abstract 与阅读信号更新偏好画像。</p>
-      {% if saved %}<p class="success-note">已保存，下一次推荐会使用新偏好。</p>{% endif %}
-      <form method="post" action="/settings" class="stack">
-        <textarea name="interests" rows="6" placeholder="quantum error correction, tensor networks, topological phases...">{{ preferences.manual_interests }}</textarea>
-        <button type="submit">保存兴趣</button>
-      </form>
-      {% if preferences.profile_summary %}
-      <div class="profile-summary"><strong>当前画像</strong><p>{{ preferences.profile_summary }}</p><small>上次生成：{{ preferences.profile_generated_at.strftime('%Y-%m-%d %H:%M') if preferences.profile_generated_at else '尚未生成' }}</small></div>
-      {% else %}<p class="muted">尚未生成 DeepSeek 偏好画像；没有 API key 时会使用本地回退排序。</p>{% endif %}
-      <form method="post" action="/settings/preferences/rebuild"><button class="secondary-button">立即重建偏好画像</button></form>
-    </section>
-
-    <section class="settings-card">
-      <span class="step-number">02</span>
-      <h2>Google Scholar 重点作者</h2>
-      <p>粘贴公开作者主页链接。同步使用 SerpAPI；新论文会尝试补齐原始 abstract。</p>
-      <form method="post" action="/settings/authors" class="inline-form">
-        <input type="url" name="profile_url" required placeholder="https://scholar.google.com/citations?user=...">
-        <button type="submit">添加作者</button>
-      </form>
-      <div class="follow-list author-list" aria-label="Google Scholar 重点作者，按总引用次数从高到低排序">
-        {% for author in authors %}
-        <div><span><strong>{{ author.name }}</strong><small>{{ author.scholar_author_id }} · {% if author.citation_count_updated_at %}总引用 {{ author.citation_count }}{% else %}引用次数待同步{% endif %}</small></span><form method="post" action="/settings/authors/{{ author.id }}/delete"><button class="text-button">移除</button></form></div>
-        {% else %}<p class="muted">还没有重点作者。</p>{% endfor %}
-      </div>
-    </section>
-  </div>
 
   <section class="settings-section">
     <header><p class="eyebrow">SOURCES</p><h2>更新与外部服务</h2><p>arXiv 跟随官方发布时刻；其他来源按独立频率计算。遇到限流 30 分钟后重试，其他失败 6 小时后重试。页面时间为北京时间。</p></header>
     <div class="schedule-grid">
       {% for schedule in schedules %}
       {% set labels = {'arxiv': 'arXiv', 'scirate': 'SciRate', 'scholar': 'Google Scholar', 'journals': '重点期刊'} %}
-      <section class="settings-card schedule-card">
+      <section class="settings-card schedule-card" id="schedule-{{ schedule.source }}">
         <h3>{{ labels[schedule.source] }}</h3>
-        <form method="post" action="/settings/schedules/{{ schedule.source }}" class="schedule-form">
+        <form method="post" action="/settings/schedules/{{ schedule.source }}" class="schedule-form" hx-post="/settings/schedules/{{ schedule.source }}" hx-target="#schedule-{{ schedule.source }}" hx-select="#schedule-{{ schedule.source }}" hx-swap="outerHTML">
           <label><input type="checkbox" name="enabled" {{ 'checked' if schedule.enabled }}> 启用</label>
           {% if schedule.source == 'arxiv' %}
           <input name="interval_days" type="hidden" value="1">
@@ -69,7 +32,7 @@
         <small>下次计划：{{ (schedule.next_due_at|local_datetime) if schedule.next_due_at else '等待安排' }}</small>
         {% if schedule.last_error %}<p class="error">{{ schedule.last_error }}</p>{% endif %}
         {% if schedule.source == 'scirate' %}<p class="muted">手动更新遇到 Cloudflare 时会打开专用 Chrome，等待您完成人工验证（最长 5 分钟）；定时更新不会弹窗。</p>{% endif %}
-        <form method="post" action="/settings/sync/{{ schedule.source }}"><button class="text-button">立即更新</button></form>
+        <form method="post" action="/settings/sync/{{ schedule.source }}" hx-post="/settings/sync/{{ schedule.source }}" hx-swap="none"><button class="text-button">立即更新</button></form>
       </section>
       {% endfor %}
     </div>
@@ -79,29 +42,75 @@
     </div>
   </section>
 
-  <section class="settings-section">
-    <header><p class="eyebrow">JOURNALS</p><h2>期刊来源</h2><p>默认包含 Nature、Nature Physics 与 Physical Review Letters；可补充公开 HTTPS RSS/Atom。</p></header>
-    <section class="settings-card">
-      {% if journal_error %}<p class="error">RSS/Atom 地址必须是公开的 HTTPS URL。</p>{% endif %}
-      <form method="post" action="/settings/journals" class="inline-form journal-form">
-        <label>期刊名称<input name="name" required placeholder="例如 Science"></label>
-        <label>RSS / Atom URL<input name="feed_url" type="url" required placeholder="https://example.org/feed.xml"></label>
-        <label>ISSN（可选）<input name="issn" placeholder="1234-5678"></label>
-        <button>添加来源</button>
+  <div class="settings-grid preference-grid">
+    <section class="settings-card" id="preferences-card">
+      <span class="step-number">01</span>
+      <h2>我的研究偏好</h2>
+      <p>填写兴趣作为冷启动提示。DeepSeek 每周根据论文标题、作者、abstract 与阅读信号更新偏好画像。</p>
+      <form method="post" action="/settings" class="stack" hx-post="/settings" hx-swap="none">
+        <textarea name="interests" rows="6" placeholder="quantum error correction, tensor networks, topological phases...">{{ preferences.manual_interests }}</textarea>
+        <label>三天精选篇数 <input name="featured_paper_count" type="number" min="1" max="200" value="{{ preferences.featured_paper_count }}" required></label>
+        <button type="submit">保存兴趣</button>
       </form>
+      {% if preferences.profile_summary %}
+      <div class="profile-summary"><strong>当前画像</strong><p>{{ preferences.profile_summary }}</p><small>上次生成：{{ preferences.profile_generated_at.strftime('%Y-%m-%d %H:%M') if preferences.profile_generated_at else '尚未生成' }}</small></div>
+      {% else %}<p class="muted">尚未生成 DeepSeek 偏好画像；没有 API key 时会使用本地回退排序。</p>{% endif %}
+      <form method="post" action="/settings/preferences/rebuild" hx-post="/settings/preferences/rebuild" hx-swap="none"><button class="secondary-button">立即重建偏好画像</button></form>
+    </section>
+
+    <section class="settings-card" id="authors-card">
+      <span class="step-number">02</span>
+      <h2>Google Scholar 重点作者</h2>
+      <p>粘贴公开作者主页链接。同步使用 SerpAPI；来源没有 abstract 时会明确显示暂无摘要。</p>
+      <form method="post" action="/settings/authors" class="inline-form" hx-post="/settings/authors" hx-target="#authors-card" hx-select="#authors-card" hx-swap="outerHTML">
+        <input type="url" name="profile_url" required placeholder="https://scholar.google.com/citations?user=...">
+        <button type="submit">添加作者</button>
+      </form>
+      <div class="follow-list author-list" aria-label="Google Scholar 重点作者，按总引用次数从高到低排序">
+        {% for author in authors %}
+        <div><span><strong>{{ author.name }}</strong><small>{{ author.scholar_author_id }} · {% if author.citation_count_updated_at %}总引用 {{ author.citation_count }}{% else %}引用次数待同步{% endif %}</small></span><form method="post" action="/settings/authors/{{ author.id }}/delete" hx-post="/settings/authors/{{ author.id }}/delete" hx-target="#authors-card" hx-select="#authors-card" hx-swap="outerHTML"><button class="text-button">移除</button></form></div>
+        {% else %}<p class="muted">还没有重点作者。</p>{% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section class="settings-section" id="journal-section">
+    <header><p class="eyebrow">JOURNALS</p><h2>期刊来源</h2><p>没有默认订阅。填写期刊名称和官网，程序会发现并验证官方来源、文章类型与物理相关性。</p></header>
+    <section class="settings-card">
+      {% if journal_error %}<p class="error">{{ '发现结果已过期，请重新查找。' if journal_error == 'expired' else journal_error }}</p>{% endif %}
+      <form method="post" action="/settings/journals/discover" class="inline-form journal-form" hx-post="/settings/journals/discover" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML" data-loading-toast="正在查找并验证官方期刊来源…">
+        <label>期刊名称<input name="name" required placeholder="例如 Nature Communications"></label>
+        <label>期刊官网<input name="homepage_url" type="url" required placeholder="https://www.nature.com/ncomms/"></label>
+        <button>查找期刊</button>
+      </form>
+      {% if journal_preview %}
+      <article class="journal-preview" aria-label="期刊发现结果">
+        <h3>{{ journal_preview.name }}</h3>
+        <p><strong>官网：</strong>{{ journal_preview.canonical_domain }} · <strong>范围：</strong>{{ '物理专业期刊' if journal_preview.scope_kind == 'physics' else '综合期刊' }}</p>
+        {% if journal_preview.issn_online or journal_preview.issn_print %}<p><strong>ISSN：</strong>{{ journal_preview.issn_online }}{% if journal_preview.issn_print %} / {{ journal_preview.issn_print }}{% endif %}</p>{% endif %}
+        <p>扫描 {{ journal_preview.scanned_count }} 条；排除非研究 {{ journal_preview.nonresearch_filtered }} 条；排除非物理 {{ journal_preview.nonphysics_filtered }} 条。</p>
+        <ol>{% for paper in journal_preview.papers %}<li><strong>{{ paper.title }}</strong><small>{{ paper.authors or '作者未知' }} · {{ paper.published_at }}</small></li>{% endfor %}</ol>
+        {% for warning in journal_preview.warnings %}<p class="muted">{{ warning }}</p>{% endfor %}
+        <form method="post" action="/settings/journals/confirm" hx-post="/settings/journals/confirm" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML"><input type="hidden" name="token" value="{{ journal_preview.token }}"><button>确认添加</button></form>
+      </article>
+      {% endif %}
       {% for feed in journal_feeds %}
-        <div class="follow-row"><div><strong>{{ feed.name }}</strong><small>{{ feed.feed_url }}{% if feed.issn %} · {{ feed.issn }}{% endif %}</small></div><form method="post" action="/settings/journals/{{ feed.id }}/delete"><button class="danger">删除</button></form></div>
-      {% else %}<p class="muted">尚未添加自定义期刊源。</p>{% endfor %}
+        <div class="follow-row"><div><strong>{{ feed.name }}</strong><small>{{ feed.homepage_url }}{% if feed.issn_online or feed.issn_print %} · {{ feed.issn_online or feed.issn_print }}{% endif %}</small><small>上次扫描 {{ feed.last_items_seen }} · 导入 {{ feed.last_items_imported }} · 非研究 {{ feed.last_nonresearch_filtered }} · 非物理 {{ feed.last_nonphysics_filtered }}</small></div><form method="post" action="/settings/journals/{{ feed.id }}/delete" hx-post="/settings/journals/{{ feed.id }}/delete" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML"><button class="danger">删除</button></form></div>
+      {% else %}<p class="muted">尚未添加期刊。</p>{% endfor %}
     </section>
   </section>
 
   <section class="settings-section status-table">
     <header><p class="eyebrow">ACTIVITY</p><h2>最近同步与 API 用量</h2></header>
-    <div class="settings-card">
-      <table><thead><tr><th>来源</th><th>状态</th><th>新增/读取</th><th>开始时间</th><th>信息</th></tr></thead><tbody>
-        {% for run in runs %}<tr><td>{{ run.source }}</td><td><span class="status status-{{ run.status.value }}">{{ run.status.value }}</span></td><td>{{ run.items_created }}/{{ run.items_seen }}</td><td>{{ run.started_at|local_datetime('%m-%d %H:%M') }}</td><td>{{ run.error or '—' }}</td></tr>{% else %}<tr><td colspan="5">还没有同步记录。</td></tr>{% endfor %}
-      </tbody></table>
-      <div class="usage-list">{% for service, requests, tokens in usage %}<span><strong>{{ service }}</strong> {{ requests or 0 }} requests · {{ tokens or 0 }} tokens</span>{% else %}<span class="muted">尚未产生外部 API 用量。</span>{% endfor %}</div>
+    <div class="activity-grid">
+      <section class="settings-card activity-card"><h3>最近同步</h3><div class="activity-scroll" tabindex="0" role="region" aria-label="最近同步历史"><table><thead><tr><th>来源</th><th>状态</th><th>新增/读取</th><th>开始时间</th><th>信息</th></tr></thead><tbody>
+        {% include "partials/sync_run_rows.html" %}
+        {% if not runs %}<tr><td colspan="5">还没有同步记录。</td></tr>{% endif %}
+      </tbody></table></div></section>
+      <section class="settings-card activity-card"><h3>API 用量</h3><div class="usage-list">{% for service, requests, tokens in usage %}<span><strong>{{ service }}</strong> {{ requests or 0 }} requests · {{ tokens or 0 }} tokens</span>{% else %}<span class="muted">尚未产生外部 API 用量。</span>{% endfor %}</div><div class="activity-scroll" tabindex="0" role="region" aria-label="API 用量明细"><table><thead><tr><th>时间</th><th>服务</th><th>操作</th><th>请求</th><th>输入 token</th><th>输出 token</th></tr></thead><tbody>
+        {% include "partials/api_usage_rows.html" %}
+        {% if not usage_details %}<tr><td colspan="6">还没有 API 用量明细。</td></tr>{% endif %}
+      </tbody></table></div></section>
     </div>
   </section>
 </main>

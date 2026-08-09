@@ -1,15 +1,17 @@
-"""Three-day DeepSeek recommendation batches with a deterministic offline fallback."""
+"""Deterministic three-day BM25 shortlist followed by optional DeepSeek reranking."""
 
 import json
 import math
 import re
+import threading
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..config import Settings, get_settings
@@ -22,11 +24,46 @@ from ..models import (
     Paper,
     RecommendationBatch,
     RecommendationItem,
+    SourceSchedule,
     utcnow,
 )
 from .preferences import PreferenceUnavailableError, check_token_budget, get_preferences
 
-RECOMMENDATION_PROMPT_VERSION = "v1"
+RECOMMENDATION_PROMPT_VERSION = "featured-v2"
+RANKING_VERSION = "bm25-v1"
+RERANK_CHUNK_SIZE = 50
+TITLE_WEIGHT = 3.0
+ABSTRACT_WEIGHT = 1.0
+BM25_K1 = 1.5
+BM25_B = 0.75
+EXPLORATION_FRACTION = 0.10
+STOPWORDS = {
+    "about",
+    "after",
+    "also",
+    "among",
+    "analysis",
+    "approach",
+    "based",
+    "between",
+    "from",
+    "have",
+    "into",
+    "model",
+    "paper",
+    "result",
+    "results",
+    "show",
+    "study",
+    "system",
+    "that",
+    "their",
+    "these",
+    "this",
+    "using",
+    "with",
+}
+_generation_lock = threading.Lock()
 
 
 class RecommendationUnavailableError(RuntimeError):
@@ -36,6 +73,7 @@ class RecommendationUnavailableError(RuntimeError):
 class ModelRecommendation(BaseModel):
     paper_id: str
     preference_score: float = Field(ge=0, le=100)
+    confidence: float = Field(default=1.0, ge=0, le=1)
     reason: str = Field(min_length=1, max_length=300)
 
 
@@ -49,6 +87,14 @@ class RerankResult:
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class LocalRank:
+    paper: Paper
+    bm25_score: float
+    structured_score: float
+    final_score: float
 
 
 class RecommendationProvider(ABC):
@@ -73,12 +119,18 @@ class DeepSeekRecommendationProvider(RecommendationProvider):
             {
                 "manual_interests": preferences.manual_interests,
                 "preference_profile": profile,
+                "absolute_scale": {
+                    "0": "unrelated",
+                    "50": "possibly useful",
+                    "100": "directly aligned with the reader's research",
+                },
                 "papers": [
                     {
                         "paper_id": paper.id,
                         "title": paper.title,
                         "authors": paper.authors_text,
-                        "abstract": paper.abstract or "unavailable",
+                        "sources": sorted(_source_names(paper)),
+                        "abstract": (paper.abstract or "unavailable")[:2000],
                     }
                     for paper in papers
                 ],
@@ -87,6 +139,7 @@ class DeepSeekRecommendationProvider(RecommendationProvider):
                         {
                             "paper_id": "one supplied ID",
                             "preference_score": "0 to 100",
+                            "confidence": "0 to 1",
                             "reason": "short Chinese reason",
                         }
                     ]
@@ -117,16 +170,22 @@ class DeepSeekRecommendationProvider(RecommendationProvider):
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=max(1200, len(papers) * 45),
+                max_tokens=max(1200, len(papers) * 55),
                 extra_body=extra_body,
             )
-        except Exception as exc:
-            raise RecommendationUnavailableError("DeepSeek 推荐排序服务暂时不可用") from exc
-        try:
-            raw = response.choices[0].message.content or "{}"
+            choice = response.choices[0]
+            if choice.finish_reason not in {"stop", None}:
+                raise RecommendationUnavailableError(
+                    f"DeepSeek 推荐输出未完成：{choice.finish_reason}"
+                )
+            raw = choice.message.content or "{}"
             parsed = ModelRecommendationResponse.model_validate(json.loads(raw))
+        except RecommendationUnavailableError:
+            raise
         except (AttributeError, IndexError, json.JSONDecodeError, ValidationError) as exc:
             raise RecommendationUnavailableError("DeepSeek 返回的推荐格式无效") from exc
+        except Exception as exc:
+            raise RecommendationUnavailableError("DeepSeek 推荐排序服务暂时不可用") from exc
         usage = response.usage
         return RerankResult(
             items=parsed.items,
@@ -146,81 +205,209 @@ def _source_names(paper: Paper) -> set[str]:
     return {source.source for source in paper.sources}
 
 
-def _excluded_ids(db: Session, cutoff: datetime) -> set[str]:
-    return set(
-        db.scalars(
-            select(RecommendationItem.paper_id)
-            .join(RecommendationBatch)
-            .where(RecommendationBatch.generated_at >= cutoff)
-        ).all()
-    )
+def _recently_recommended_without_update(db: Session, cutoff: datetime) -> set[str]:
+    rows = db.execute(
+        select(Paper, RecommendationBatch.generated_at)
+        .join(RecommendationItem, RecommendationItem.paper_id == Paper.id)
+        .join(RecommendationBatch, RecommendationBatch.id == RecommendationItem.batch_id)
+        .where(
+            RecommendationBatch.generated_at >= cutoff,
+            RecommendationBatch.ranking_version == RANKING_VERSION,
+        )
+    ).all()
+    excluded: set[str] = set()
+    for paper, generated_at in rows:
+        if paper.updated_at is None or _aware(paper.updated_at) <= _aware(generated_at):
+            excluded.add(paper.id)
+    return excluded
 
 
 def recommendation_candidates(db: Session, *, now: datetime | None = None) -> list[Paper]:
     now = now or datetime.now(UTC)
-    strict_start = now - timedelta(days=7)
-    broad_start = now - timedelta(days=30)
+    window_start = now - timedelta(days=3)
     dismissed_ids = set(
         db.scalars(
             select(Interaction.paper_id).where(Interaction.kind == InteractionKind.DISMISSED)
         ).all()
     )
-    previously_recommended = _excluded_ids(db, now - timedelta(days=30))
+    previously_recommended = _recently_recommended_without_update(
+        db, now - timedelta(days=30)
+    )
     papers = list(
         db.scalars(
             select(Paper)
             .options(selectinload(Paper.sources))
-            .where(or_(Paper.published_at >= broad_start, Paper.discovered_at >= broad_start))
+            .where(or_(Paper.published_at >= window_start, Paper.discovered_at >= window_start))
             .order_by(Paper.discovered_at.desc(), Paper.id.desc())
         )
         .unique()
         .all()
     )
-    fresh = [
+    return [
         paper
         for paper in papers
         if paper.id not in dismissed_ids
         and paper.id not in previously_recommended
-        and (
-            _aware(paper.published_at) >= strict_start
-            or _aware(paper.discovered_at) >= strict_start
+        and not (
+            "journal" in _source_names(paper)
+            and (paper.is_original_research is False or paper.is_physics is False)
         )
     ]
-    if len(fresh) >= 50:
-        return fresh
-    extras = [
-        paper
-        for paper in papers
-        if paper.id not in dismissed_ids
-        and paper.id not in previously_recommended
-        and paper not in fresh
+
+
+def _tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z][a-z0-9-]{2,}", value.lower())
+        if token not in STOPWORDS
     ]
-    return fresh + extras
 
 
-def _profile_terms(preferences: AppPreferences) -> set[str]:
+def _profile_term_weights(db: Session, preferences: AppPreferences) -> dict[str, float]:
     profile = preferences.profile_json or {}
-    raw_values = [preferences.manual_interests, preferences.profile_summary]
+    positive_values = [preferences.manual_interests, preferences.profile_summary]
     for key in ("topics", "methods", "physical_systems", "preferred_authors"):
-        raw_values.extend(str(value) for value in profile.get(key, []))
-    return {token for value in raw_values for token in re.findall(r"[a-z0-9-]{3,}", value.lower())}
+        positive_values.extend(str(value) for value in profile.get(key, []))
+    weights: dict[str, float] = {}
+    for value in positive_values:
+        for token in _tokens(value):
+            weights[token] = weights.get(token, 0.0) + 1.0
+
+    interactions = db.scalars(
+        select(Interaction)
+        .options(selectinload(Interaction.paper))
+        .where(
+            Interaction.kind.in_(
+                (
+                    InteractionKind.SAVED,
+                    InteractionKind.ABSTRACT_VIEWED,
+                    InteractionKind.FULLTEXT,
+                    InteractionKind.DISMISSED,
+                )
+            )
+        )
+    ).all()
+    signal_weight = {
+        InteractionKind.SAVED: 2.0,
+        InteractionKind.ABSTRACT_VIEWED: 1.0,
+        InteractionKind.FULLTEXT: 1.5,
+        InteractionKind.DISMISSED: -1.5,
+    }
+    for interaction in interactions:
+        for token in set(_tokens(f"{interaction.paper.title} {interaction.paper.abstract}")):
+            weights[token] = weights.get(token, 0.0) + signal_weight[interaction.kind]
+    return {term: weight for term, weight in weights.items() if weight != 0}
 
 
-def _fallback_score(paper: Paper, preferences: AppPreferences, now: datetime) -> tuple[float, str]:
+def _bm25_scores(
+    papers: list[Paper], term_weights: dict[str, float]
+) -> dict[str, float]:
+    if not papers or not term_weights:
+        return {paper.id: 0.0 for paper in papers}
+    documents: dict[str, Counter[str]] = {}
+    lengths: dict[str, float] = {}
+    document_frequency: Counter[str] = Counter()
+    for paper in papers:
+        title_counts = Counter(_tokens(paper.title))
+        abstract_counts = Counter(_tokens(paper.abstract))
+        weighted = Counter(
+            {
+                term: TITLE_WEIGHT * title_counts[term] + ABSTRACT_WEIGHT * abstract_counts[term]
+                for term in title_counts.keys() | abstract_counts.keys()
+            }
+        )
+        documents[paper.id] = weighted
+        lengths[paper.id] = sum(weighted.values()) or 1.0
+        document_frequency.update(weighted.keys())
+    average_length = sum(lengths.values()) / len(lengths)
+    total = len(papers)
+    scores: dict[str, float] = {}
+    for paper in papers:
+        score = 0.0
+        for term, query_weight in term_weights.items():
+            frequency = documents[paper.id].get(term, 0.0)
+            if frequency <= 0:
+                continue
+            frequency_docs = document_frequency[term]
+            inverse_frequency = math.log(
+                1 + (total - frequency_docs + 0.5) / (frequency_docs + 0.5)
+            )
+            denominator = frequency + BM25_K1 * (
+                1 - BM25_B + BM25_B * lengths[paper.id] / average_length
+            )
+            score += query_weight * inverse_frequency * frequency * (BM25_K1 + 1) / denominator
+        scores[paper.id] = score
+    return scores
+
+
+def _structured_score(paper: Paper, now: datetime) -> float:
     age_days = max(
-        0.0, (now - _aware(paper.published_at or paper.discovered_at)).total_seconds() / 86400
+        0.0,
+        (now - _aware(paper.published_at or paper.discovered_at)).total_seconds() / 86400,
     )
-    freshness = max(0.0, 100 - min(100, age_days * 12))
+    freshness = max(0.0, 100 - min(100, age_days * 25))
     sources = _source_names(paper)
     author = 100.0 if "scholar" in sources else 0.0
     scirate = min(100.0, 20 * math.log2(1 + paper.scites_count)) if paper.scites_count else 0.0
     journal = 100.0 if "journal" in sources else 0.0
-    tokens = set(re.findall(r"[a-z0-9-]{3,}", f"{paper.title} {paper.abstract}".lower()))
-    terms = _profile_terms(preferences)
-    match = 100.0 * len(tokens & terms) / max(1, len(terms))
-    score = 0.7 * match + 0.1 * freshness + 0.08 * author + 0.07 * scirate + 0.05 * journal
-    reason = "本地回退：结合近期性、来源与研究关键词"
-    return score, reason
+    diversity = min(100.0, len(sources) * 35.0)
+    return 0.45 * freshness + 0.20 * author + 0.15 * scirate + 0.10 * journal + 0.10 * diversity
+
+
+def local_rank_candidates(
+    db: Session,
+    papers: list[Paper],
+    preferences: AppPreferences,
+    now: datetime,
+) -> list[LocalRank]:
+    bm25 = _bm25_scores(papers, _profile_term_weights(db, preferences))
+    positive_maximum = max(0.0, max(bm25.values(), default=0.0))
+    negative_maximum = abs(min(0.0, min(bm25.values(), default=0.0)))
+    ranked = []
+    for paper in papers:
+        raw_bm25 = bm25[paper.id]
+        if raw_bm25 > 0 and positive_maximum:
+            normalized_bm25 = 100.0 * raw_bm25 / positive_maximum
+        elif raw_bm25 < 0 and negative_maximum:
+            normalized_bm25 = 100.0 * raw_bm25 / negative_maximum
+        else:
+            normalized_bm25 = 0.0
+        structured = _structured_score(paper, now)
+        ranked.append(
+            LocalRank(
+                paper=paper,
+                bm25_score=normalized_bm25,
+                structured_score=structured,
+                final_score=0.75 * normalized_bm25 + 0.25 * structured,
+            )
+        )
+    return sorted(
+        ranked,
+        key=lambda item: (item.final_score, _aware(item.paper.discovered_at), item.paper.id),
+        reverse=True,
+    )
+
+
+def build_shortlist(local_ranks: list[LocalRank], requested_count: int) -> list[LocalRank]:
+    candidate_count = len(local_ranks)
+    target = min(candidate_count, max(3 * requested_count, 100), 300)
+    if target >= candidate_count:
+        return local_ranks
+    explore_count = max(1, round(target * EXPLORATION_FRACTION))
+    core = local_ranks[: target - explore_count]
+    core_ids = {item.paper.id for item in core}
+    exploration = sorted(
+        (item for item in local_ranks if item.paper.id not in core_ids),
+        key=lambda item: (
+            "scholar" in _source_names(item.paper),
+            item.paper.is_scirate_hot,
+            len(_source_names(item.paper)),
+            _aware(item.paper.discovered_at),
+            item.paper.id,
+        ),
+        reverse=True,
+    )[:explore_count]
+    return core + exploration
 
 
 def _validated_model_scores(
@@ -230,6 +417,8 @@ def _validated_model_scores(
     for item in result.items:
         if item.paper_id in supplied_ids and item.paper_id not in valid:
             valid[item.paper_id] = item
+    if set(valid) != supplied_ids:
+        raise RecommendationUnavailableError("模型未返回分组中的全部候选论文")
     return valid
 
 
@@ -237,13 +426,25 @@ def recommendation_is_due(db: Session, *, now: datetime | None = None) -> bool:
     now = now or datetime.now(UTC)
     latest = db.scalar(
         select(RecommendationBatch)
-        .where(RecommendationBatch.status == "success")
+        .where(
+            RecommendationBatch.status == "success",
+            RecommendationBatch.ranking_version == RANKING_VERSION,
+        )
         .order_by(RecommendationBatch.generated_at.desc())
     )
     if latest is None:
         return True
-    generated = _aware(latest.generated_at)
-    return now - generated >= timedelta(days=3)
+    return now - _aware(latest.generated_at) >= timedelta(days=3)
+
+
+def _stale_sources(db: Session, now: datetime) -> list[str]:
+    stale: list[str] = []
+    for schedule in db.scalars(select(SourceSchedule).where(SourceSchedule.enabled.is_(True))):
+        if schedule.last_success_at is None or now - _aware(schedule.last_success_at) > timedelta(
+            days=max(1, schedule.interval_days) * 2
+        ):
+            stale.append(schedule.source)
+    return sorted(stale)
 
 
 def generate_recommendation_batch(
@@ -253,100 +454,149 @@ def generate_recommendation_batch(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> RecommendationBatch:
-    """Persist a complete 3-day batch; no model result means deterministic fallback."""
+    """Persist at most the configured N papers from the strict three-day window."""
 
-    now = now or utcnow()
-    settings = settings or get_settings()
-    preferences = get_preferences(db)
-    candidates = recommendation_candidates(db, now=now)
-    batch = RecommendationBatch(
-        generated_at=now,
-        window_start=now - timedelta(days=7),
-        window_end=now,
-        profile_generated_at=preferences.profile_generated_at,
-        model=settings.llm_model if settings.deepseek_api_key else "local-fallback",
-        prompt_version=RECOMMENDATION_PROMPT_VERSION,
-        status="success",
-    )
-    db.add(batch)
-    db.flush()
-    fallback_used = not bool(settings.deepseek_api_key) and provider is None
-    scores: dict[str, ModelRecommendation] = {}
-    input_tokens = 0
-    output_tokens = 0
-    if settings.deepseek_api_key or provider is not None:
-        try:
-            check_token_budget(db, settings, now)
-            active_provider = provider or DeepSeekRecommendationProvider(settings)
-            for start in range(0, len(candidates), 50):
-                chunk = candidates[start : start + 50]
-                result = active_provider.rerank(preferences, chunk)
-                scores.update(_validated_model_scores(result, {paper.id for paper in chunk}))
-                batch.model = result.model
-                input_tokens += result.input_tokens
-                output_tokens += result.output_tokens
-            if len(scores) != len(candidates):
-                raise RecommendationUnavailableError("模型未返回全部候选论文")
-        except (PreferenceUnavailableError, RecommendationUnavailableError) as exc:
-            fallback_used = True
-            batch.error = str(exc)
-            scores = {}
+    if not _generation_lock.acquire(blocking=False):
+        raise RecommendationUnavailableError("三天精选任务已经在运行")
+    try:
+        now = now or utcnow()
+        settings = settings or get_settings()
+        preferences = get_preferences(db)
+        requested_count = preferences.featured_paper_count
+        window_start = now - timedelta(days=3)
+        raw_candidate_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(Paper)
+                .where(
+                    or_(
+                        Paper.published_at >= window_start,
+                        Paper.discovered_at >= window_start,
+                    )
+                )
+            )
+            or 0
+        )
+        candidates = recommendation_candidates(db, now=now)
+        local_ranks = local_rank_candidates(db, candidates, preferences, now)
+        shortlist = build_shortlist(local_ranks, requested_count)
+        source_counts = Counter(
+            source for item in candidates for source in _source_names(item)
+        )
+        batch = RecommendationBatch(
+            generated_at=now,
+            window_start=window_start,
+            window_end=now,
+            profile_generated_at=preferences.profile_generated_at,
+            model=settings.llm_model if settings.deepseek_api_key else "local-bm25",
+            prompt_version=RECOMMENDATION_PROMPT_VERSION,
+            status="success",
+            requested_count=requested_count,
+            candidate_count=len(candidates),
+            shortlist_count=len(shortlist),
+            filtered_count=max(0, raw_candidate_count - len(candidates)),
+            source_stats_json=dict(source_counts),
+            stale_sources_json=_stale_sources(db, now),
+            ranking_version=RANKING_VERSION,
+        )
+        # Do not hold a SQLite write transaction while waiting on an external model.
+        # All required ORM objects use the app's expire_on_commit=False session.
+        db.commit()
 
-    ordered: list[tuple[Paper, float, str, float]] = []
-    for paper in candidates:
-        fallback_score, fallback_reason = _fallback_score(paper, preferences, now)
-        model_score = scores.get(paper.id)
-        if model_score:
-            sources = _source_names(paper)
-            age_days = max(
-                0.0,
-                (now - _aware(paper.published_at or paper.discovered_at)).total_seconds() / 86400,
-            )
-            freshness = max(0.0, 100 - min(100, age_days * 12))
-            author = 100.0 if "scholar" in sources else 0.0
-            scirate = (
-                min(100.0, 20 * math.log2(1 + paper.scites_count)) if paper.scites_count else 0.0
-            )
-            journal = 100.0 if "journal" in sources else 0.0
-            final_score = (
-                0.7 * model_score.preference_score
-                + 0.1 * freshness
-                + 0.08 * author
-                + 0.07 * scirate
-                + 0.05 * journal
-            )
-            ordered.append((paper, final_score, model_score.reason, model_score.preference_score))
-        else:
-            ordered.append((paper, fallback_score, fallback_reason, 0.0))
-    ordered.sort(
-        key=lambda item: (item[1], _aware(item[0].discovered_at), item[0].id), reverse=True
-    )
-    for position, (paper, final_score, reason, llm_score) in enumerate(ordered, start=1):
-        db.add(
-            RecommendationItem(
-                batch_id=batch.id,
-                paper_id=paper.id,
-                position=position,
-                llm_score=llm_score,
-                final_score=final_score,
-                reason=reason,
-            )
+        scores: dict[str, ModelRecommendation] = {}
+        input_tokens = output_tokens = successful = failed = requests = 0
+        errors: list[str] = []
+        model_enabled = bool(settings.deepseek_api_key) or provider is not None
+        if model_enabled and shortlist:
+            try:
+                check_token_budget(db, settings, now)
+                db.commit()
+                active_provider = provider or DeepSeekRecommendationProvider(settings)
+                for start in range(0, len(shortlist), RERANK_CHUNK_SIZE):
+                    chunk = shortlist[start : start + RERANK_CHUNK_SIZE]
+                    papers = [item.paper for item in chunk]
+                    supplied_ids = {paper.id for paper in papers}
+                    chunk_scores: dict[str, ModelRecommendation] | None = None
+                    last_error = ""
+                    for _attempt in range(2):
+                        requests += 1
+                        try:
+                            result = active_provider.rerank(preferences, papers)
+                            chunk_scores = _validated_model_scores(result, supplied_ids)
+                            batch.model = result.model
+                            input_tokens += result.input_tokens
+                            output_tokens += result.output_tokens
+                            break
+                        except RecommendationUnavailableError as exc:
+                            last_error = str(exc)
+                    if chunk_scores is None:
+                        failed += len(chunk)
+                        errors.append(last_error or "DeepSeek 分组失败")
+                    else:
+                        successful += len(chunk_scores)
+                        scores.update(chunk_scores)
+            except (PreferenceUnavailableError, RecommendationUnavailableError) as exc:
+                failed = len(shortlist)
+                errors.append(str(exc))
+        elif shortlist:
+            failed = len(shortlist)
+
+        local_by_id = {item.paper.id: item for item in shortlist}
+        ordered: list[tuple[Paper, float, str, float]] = []
+        for item in shortlist:
+            model_score = scores.get(item.paper.id)
+            if model_score:
+                final_score = 0.70 * model_score.preference_score + 0.30 * item.final_score
+                ordered.append(
+                    (item.paper, final_score, model_score.reason, model_score.preference_score)
+                )
+            else:
+                reason = "本地粗排：研究词项、近期性与来源信号"
+                ordered.append((item.paper, item.final_score, reason, 0.0))
+        ordered.sort(
+            key=lambda item: (
+                item[1],
+                local_by_id[item[0].id].bm25_score,
+                _aware(item[0].discovered_at),
+                item[0].id,
+            ),
+            reverse=True,
         )
-    batch.fallback_used = fallback_used
-    if scores:
-        db.add(
-            ApiUsage(
-                service="deepseek",
-                operation="recommendation_rerank",
-                request_count=max(1, math.ceil(len(candidates) / 50)),
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                created_at=now,
+        selected = ordered[:requested_count]
+        db.add(batch)
+        db.flush()
+        for position, (paper, final_score, reason, llm_score) in enumerate(selected, start=1):
+            db.add(
+                RecommendationItem(
+                    batch_id=batch.id,
+                    paper_id=paper.id,
+                    position=position,
+                    llm_score=llm_score,
+                    final_score=final_score,
+                    reason=reason,
+                )
             )
-        )
-    db.commit()
-    db.refresh(batch)
-    return batch
+        batch.rerank_success_count = successful
+        batch.rerank_fallback_count = failed
+        batch.selected_count = len(selected)
+        batch.fallback_used = failed > 0
+        batch.error = "; ".join(dict.fromkeys(errors))[:2000]
+        if requests:
+            db.add(
+                ApiUsage(
+                    service="deepseek",
+                    operation="featured_rerank",
+                    request_count=requests,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    created_at=now,
+                )
+            )
+        db.commit()
+        db.refresh(batch)
+        return batch
+    finally:
+        _generation_lock.release()
 
 
 def generate_recommendation_batch_in_background() -> None:

@@ -54,7 +54,6 @@ def doctor() -> None:
         "database": str(database_path) if database_path else "SQLite in memory",
         "database_parent": str(Path("data").resolve()),
         "serpapi": "configured" if settings.serpapi_api_key else "not configured",
-        "semantic_scholar": "configured" if settings.semantic_scholar_api_key else "not configured",
         "deepseek": "configured" if settings.deepseek_api_key else "not configured",
     }
     for key, value in checks.items():
