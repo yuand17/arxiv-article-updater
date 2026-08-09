@@ -2,14 +2,16 @@
 {% block title %}设置 · arXiv Updater{% endblock %}
 {% block body %}
 <main class="settings-shell">
-  <header class="page-heading">
-    <p class="eyebrow">LOCAL PREFERENCES</p>
-    <h1>设置</h1>
-    <p>所有数据与互动记录只保存在这台电脑的 SQLite 论文库中。</p>
+  <header class="page-heading settings-heading">
+    <div class="settings-heading-copy">
+      <p class="eyebrow">LOCAL PREFERENCES</p>
+      <h1>设置</h1>
+      <p>所有数据与互动记录只保存在这台电脑的 SQLite 论文库中。</p>
+    </div>
     {% if sync_started == 'scirate' %}
-    <p class="success-note">SciRate 更新已启动。如果网站要求 Cloudflare 真人验证，将弹出一个专用 Chrome 窗口；请在窗口中完成验证，成功后窗口会自动关闭并继续导入。</p>
+    <p class="success-note sync-notice">SciRate 更新已启动。如果网站要求 Cloudflare 真人验证，将弹出一个专用 Chrome 窗口；请在窗口中完成验证，成功后窗口会自动关闭并继续导入。</p>
     {% elif sync_started %}
-    <p class="success-note">{{ sync_started }} 更新已启动，请稍后刷新本页查看结果。</p>
+    <p class="success-note sync-notice">{{ sync_started }} 更新已启动，请稍后刷新本页查看结果。</p>
     {% endif %}
   </header>
 

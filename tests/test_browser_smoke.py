@@ -68,7 +68,21 @@ def test_local_feed_actions_and_mobile_layout():
                 re.compile(r"\bis-saved\b")
             )
 
+            page.goto(f"http://127.0.0.1:{port}/settings?sync_started=scirate")
+            title = page.locator(".settings-heading-copy h1")
+            notice = page.locator(".sync-notice")
+            playwright.expect(title).to_be_visible()
+            playwright.expect(notice).to_be_visible()
+            title_box = title.bounding_box()
+            notice_box = notice.bounding_box()
+            assert title_box is not None and title_box["height"] < 100
+            assert notice_box is not None and notice_box["x"] > title_box["x"]
+
             page.set_viewport_size({"width": 390, "height": 844})
+            title_box = title.bounding_box()
+            notice_box = notice.bounding_box()
+            assert title_box is not None and notice_box is not None
+            assert notice_box["y"] > title_box["y"] + title_box["height"]
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
             browser.close()
     finally:
