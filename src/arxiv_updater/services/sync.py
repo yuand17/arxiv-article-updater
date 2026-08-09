@@ -147,11 +147,15 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
                     author.scholar_author_id: author
                     for author in db.scalars(select(TrackedAuthor)).all()
                 }
+                synced_at = utcnow()
                 for author_id, name_value in adapter.author_names.items():
                     author = author_map.get(author_id)
                     if author:
                         author.name = name_value
-                        author.last_synced_at = utcnow()
+                        author.last_synced_at = synced_at
+                        if author_id in adapter.author_citation_counts:
+                            author.citation_count = adapter.author_citation_counts[author_id]
+                            author.citation_count_updated_at = synced_at
                 db.add(
                     ApiUsage(
                         service="serpapi",

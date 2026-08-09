@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from arxiv_updater.sources.journals import JournalFeed, parse_journal_feed
-from arxiv_updater.sources.scholar import parse_scholar_author_id, parse_scholar_response
+from arxiv_updater.sources.scholar import (
+    parse_scholar_author_id,
+    parse_scholar_citation_count,
+    parse_scholar_response,
+)
 from arxiv_updater.sources.scirate import parse_scirate_page
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -37,6 +41,19 @@ def test_parse_scholar_response():
     assert name == "Ada Researcher"
     assert papers[0].authors == ["A Researcher", "B Scientist"]
     assert papers[0].metadata["cited_by"] == 4
+
+
+def test_parse_scholar_citation_count():
+    payload = {
+        "cited_by": {
+            "table": [
+                {"citations": {"all": "12,345", "since_2021": 10000}},
+                {"h_index": {"all": 52, "since_2021": 45}},
+            ]
+        }
+    }
+    assert parse_scholar_citation_count(payload) == 12345
+    assert parse_scholar_citation_count({}) is None
 
 
 def test_parse_scirate_page():

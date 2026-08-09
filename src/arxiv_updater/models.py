@@ -101,6 +101,8 @@ class TrackedAuthor(Base):
     scholar_author_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="Unknown author")
     profile_url: Mapped[str] = mapped_column(Text)
+    citation_count: Mapped[int] = mapped_column(Integer, default=0)
+    citation_count_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

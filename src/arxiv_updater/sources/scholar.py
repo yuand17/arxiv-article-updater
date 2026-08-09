@@ -62,6 +62,24 @@ def parse_scholar_response(payload: dict) -> tuple[str, list[PaperCandidate]]:
     return author_name, candidates
 
 
+def parse_scholar_citation_count(payload: dict) -> int | None:
+    table = (payload.get("cited_by") or {}).get("table") or []
+    if not isinstance(table, list):
+        return None
+    for metric in table:
+        citations = metric.get("citations") if isinstance(metric, dict) else None
+        if not isinstance(citations, dict):
+            continue
+        raw_value = citations.get("all")
+        if raw_value is None or isinstance(raw_value, bool):
+            return None
+        try:
+            return max(0, int(str(raw_value).replace(",", "").strip()))
+        except ValueError:
+            return None
+    return None
+
+
 class ScholarAdapter(SourceAdapter):
     name = "scholar"
 
@@ -75,6 +93,7 @@ class ScholarAdapter(SourceAdapter):
         self.settings = settings or get_settings()
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
         self.author_names: dict[str, str] = {}
+        self.author_citation_counts: dict[str, int] = {}
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         if not self.settings.serpapi_api_key:
@@ -97,6 +116,9 @@ class ScholarAdapter(SourceAdapter):
                 raise RuntimeError(str(payload["error"]))
             name, candidates = parse_scholar_response(payload)
             self.author_names[author_id] = name
+            citation_count = parse_scholar_citation_count(payload)
+            if citation_count is not None:
+                self.author_citation_counts[author_id] = citation_count
             for candidate in candidates:
                 candidate.metadata["tracked_author_id"] = author_id
             results.extend(candidates)

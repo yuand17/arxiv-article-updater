@@ -19,6 +19,8 @@ from arxiv_updater import web as web_module  # noqa: E402
 @pytest.fixture()
 def app_client():
     db_module.Base.metadata.drop_all(bind=db_module.engine)
+    with db_module.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
     db_module.Base.metadata.create_all(bind=db_module.engine)
     with TestClient(web_module.create_app()) as client:
         yield client, db_module.SessionLocal, models_module

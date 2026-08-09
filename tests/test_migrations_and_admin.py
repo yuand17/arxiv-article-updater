@@ -67,6 +67,10 @@ def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_
         tables = set(inspect(engine).get_table_names())
         assert {"papers", "app_preferences", "source_schedules", "recommendation_batches"} <= tables
         assert not {"users", "invites", "author_follows", "paper_summaries"} & tables
+        author_columns = {
+            column["name"] for column in inspect(engine).get_columns("tracked_authors")
+        }
+        assert {"citation_count", "citation_count_updated_at"} <= author_columns
         with engine.connect() as connection:
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM papers").scalar_one() == 1
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM interactions").scalar_one() == 2
@@ -88,6 +92,37 @@ def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_
             )
     finally:
         get_settings.cache_clear()
+
+
+def test_settings_sorts_tracked_authors_by_citation_count(app_client):
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.TrackedAuthor(
+                    scholar_author_id="lowcount1",
+                    name="Low Count",
+                    profile_url="https://scholar.google.com/citations?user=lowcount1",
+                    citation_count=12,
+                    citation_count_updated_at=models.utcnow(),
+                ),
+                models.TrackedAuthor(
+                    scholar_author_id="highcount",
+                    name="High Count",
+                    profile_url="https://scholar.google.com/citations?user=highcount",
+                    citation_count=340,
+                    citation_count_updated_at=models.utcnow(),
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get("/settings")
+
+    assert response.status_code == 200
+    assert response.text.index("High Count") < response.text.index("Low Count")
+    assert "总引用 340" in response.text
+    assert 'class="follow-list author-list"' in response.text
 
 
 def test_local_settings_can_add_only_public_https_journal_feeds(app_client):

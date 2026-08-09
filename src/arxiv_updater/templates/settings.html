@@ -32,9 +32,9 @@
         <input type="url" name="profile_url" required placeholder="https://scholar.google.com/citations?user=...">
         <button type="submit">添加作者</button>
       </form>
-      <div class="follow-list">
+      <div class="follow-list author-list" aria-label="Google Scholar 重点作者，按总引用次数从高到低排序">
         {% for author in authors %}
-        <div><span><strong>{{ author.name }}</strong><small>{{ author.scholar_author_id }}</small></span><form method="post" action="/settings/authors/{{ author.id }}/delete"><button class="text-button">移除</button></form></div>
+        <div><span><strong>{{ author.name }}</strong><small>{{ author.scholar_author_id }} · {% if author.citation_count_updated_at %}总引用 {{ author.citation_count }}{% else %}引用次数待同步{% endif %}</small></span><form method="post" action="/settings/authors/{{ author.id }}/delete"><button class="text-button">移除</button></form></div>
         {% else %}<p class="muted">还没有重点作者。</p>{% endfor %}
       </div>
     </section>

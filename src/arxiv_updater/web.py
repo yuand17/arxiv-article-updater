@@ -83,7 +83,11 @@ def settings_context(
     return {
         "preferences": preferences,
         "authors": db.scalars(
-            select(TrackedAuthor).order_by(TrackedAuthor.created_at.desc())
+            select(TrackedAuthor).order_by(
+                TrackedAuthor.citation_count.desc(),
+                func.lower(TrackedAuthor.name),
+                TrackedAuthor.created_at,
+            )
         ).all(),
         "journal_feeds": db.scalars(
             select(JournalSubscription).order_by(JournalSubscription.name)
