@@ -147,6 +147,7 @@ class TrayController:
             port=8000,
             log_level="info",
             access_log=False,
+            log_config=None,
         )
         # Uvicorn's logging setup runs while Config is constructed. Re-enable
         # the private controller logger before any service thread can emit.
@@ -216,6 +217,7 @@ def main() -> None:
             if not send_command("OPEN"):
                 show_error("arXiv Updater 已在运行，但无法发送打开命令。")
         return
+    controller: TrayController | None = None
     try:
         if is_healthy() or service_port_is_occupied():
             show_error("检测到旧版或未知的 8000 端口服务；请先关闭它，再启动托盘版本。")
@@ -223,6 +225,8 @@ def main() -> None:
         controller = TrayController(open_on_start=args.open or not args.background)
         controller.run()
     except Exception as exc:
+        if controller is not None:
+            controller.stop()
         LOGGER.disabled = False
         LOGGER.exception("Controller failed")
         if not args.background:

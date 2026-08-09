@@ -3,6 +3,10 @@ from __future__ import annotations
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
+from types import SimpleNamespace
+
+import arxiv_updater.db
+import arxiv_updater.web
 
 
 def _load_launcher():
@@ -47,3 +51,38 @@ def test_tray_stop_requests_graceful_shutdown() -> None:
     assert server.should_exit is True
     assert ipc_socket.closed is True
     assert icon.stopped is True
+
+
+def test_web_service_disables_console_log_config(monkeypatch) -> None:
+    launcher = _load_launcher()
+    received: dict[str, object] = {}
+
+    class FakeConfig:
+        def __init__(self, app, **kwargs) -> None:
+            received.update(kwargs)
+
+    class FakeServer:
+        def __init__(self, config) -> None:
+            self.should_exit = False
+
+        def run(self) -> None:
+            return None
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "uvicorn",
+        SimpleNamespace(Config=FakeConfig, Server=FakeServer),
+    )
+    monkeypatch.setattr(arxiv_updater.db, "init_db", lambda: None)
+    monkeypatch.setattr(
+        arxiv_updater.web,
+        "create_app",
+        lambda *, with_scheduler: object(),
+    )
+
+    controller = launcher.TrayController(open_on_start=False)
+    controller._start_web_service()
+    assert controller.server_thread is not None
+    controller.server_thread.join(timeout=2)
+
+    assert received["log_config"] is None
