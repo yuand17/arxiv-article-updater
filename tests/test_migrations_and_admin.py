@@ -130,6 +130,9 @@ def test_local_settings_can_add_only_public_https_journal_feeds(app_client):
     settings_response = client.get("/settings")
     assert settings_response.status_code == 200
     assert "更新与外部服务" in settings_response.text
+    assert "arXiv 官方时间表" in settings_response.text
+    assert "美东时间周日至周四 20:00 发布" in settings_response.text
+    assert "北京时间夏令时周一至周五 08:10" in settings_response.text
     assert "成员邀请" not in settings_response.text
 
     response = client.post(

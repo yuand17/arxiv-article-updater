@@ -1,5 +1,7 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
+from arxiv_updater.arxiv_schedule import next_arxiv_update_at
+from arxiv_updater.scheduler import _set_next_due
 from arxiv_updater.services import sync as sync_module
 from arxiv_updater.sources.scholar import ScholarAdapter
 
@@ -11,6 +13,49 @@ class _EmptyAdapter:
     def fetch(self, since):
         self.since = since
         return []
+
+
+def test_next_arxiv_update_tracks_official_weekdays_and_daylight_saving():
+    summer = next_arxiv_update_at(datetime(2026, 8, 9, 23, 0, tzinfo=UTC))
+    weekend = next_arxiv_update_at(datetime(2026, 8, 14, 0, 11, tzinfo=UTC))
+    winter = next_arxiv_update_at(datetime(2026, 1, 11, 23, 0, tzinfo=UTC))
+
+    assert summer == datetime(2026, 8, 10, 0, 10, tzinfo=UTC)
+    assert weekend == datetime(2026, 8, 17, 0, 10, tzinfo=UTC)
+    assert winter == datetime(2026, 1, 12, 1, 10, tzinfo=UTC)
+
+
+def test_successful_arxiv_update_uses_announcement_schedule(app_client):
+    _, session_factory, models = app_client
+    with session_factory() as db:
+        schedule = models.SourceSchedule(source="arxiv", enabled=True, interval_days=1)
+        db.add(schedule)
+        _set_next_due(schedule, now=datetime(2026, 8, 14, 0, 11), succeeded=True)
+        db.commit()
+
+    with session_factory() as db:
+        schedule = db.get(models.SourceSchedule, "arxiv")
+        assert schedule is not None
+        assert schedule.next_due_at == datetime(2026, 8, 17, 0, 10)
+
+
+def test_arxiv_rate_limit_retries_in_thirty_minutes(app_client):
+    _, session_factory, models = app_client
+    with session_factory() as db:
+        schedule = models.SourceSchedule(source="arxiv", enabled=True, interval_days=1)
+        db.add(schedule)
+        _set_next_due(
+            schedule,
+            now=datetime(2026, 8, 9, 10, 0, tzinfo=UTC),
+            succeeded=False,
+            error="HTTPStatusError: 429",
+        )
+        db.commit()
+
+    with session_factory() as db:
+        schedule = db.get(models.SourceSchedule, "arxiv")
+        assert schedule is not None
+        assert schedule.next_due_at == datetime(2026, 8, 9, 10, 30)
 
 
 def test_sync_normalizes_legacy_naive_sqlite_run_timestamp(app_client, monkeypatch):

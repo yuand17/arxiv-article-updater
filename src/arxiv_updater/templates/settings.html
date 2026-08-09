@@ -41,7 +41,7 @@
   </div>
 
   <section class="settings-section">
-    <header><p class="eyebrow">SOURCES</p><h2>更新与外部服务</h2><p>频率按来源独立计算。失败后六小时重试，不影响已有论文浏览。</p></header>
+    <header><p class="eyebrow">SOURCES</p><h2>更新与外部服务</h2><p>arXiv 跟随官方发布时刻；其他来源按独立频率计算。遇到限流 30 分钟后重试，其他失败 6 小时后重试。页面时间为北京时间。</p></header>
     <div class="schedule-grid">
       {% for schedule in schedules %}
       {% set labels = {'arxiv': 'arXiv', 'scirate': 'SciRate', 'scholar': 'Google Scholar', 'journals': '重点期刊'} %}
@@ -49,11 +49,17 @@
         <h3>{{ labels[schedule.source] }}</h3>
         <form method="post" action="/settings/schedules/{{ schedule.source }}" class="schedule-form">
           <label><input type="checkbox" name="enabled" {{ 'checked' if schedule.enabled }}> 启用</label>
+          {% if schedule.source == 'arxiv' %}
+          <input name="interval_days" type="hidden" value="1">
+          <p class="muted"><a href="https://info.arxiv.org/help/availability.html" target="_blank" rel="noreferrer">arXiv 官方时间表</a>为美东时间周日至周四 20:00 发布；本应用 10 分钟后抓取（北京时间夏令时周一至周五 08:10，冬令时 09:10）。</p>
+          <button class="secondary-button" type="submit">保存开关</button>
+          {% else %}
           <label>每 <input name="interval_days" type="number" min="1" max="30" value="{{ schedule.interval_days }}"> 天更新</label>
           <button class="secondary-button" type="submit">保存频率</button>
+          {% endif %}
         </form>
-        <small>上次成功：{{ schedule.last_success_at.strftime('%Y-%m-%d %H:%M') if schedule.last_success_at else '尚未成功' }}</small>
-        <small>下次计划：{{ schedule.next_due_at.strftime('%Y-%m-%d %H:%M') if schedule.next_due_at else '等待安排' }}</small>
+        <small>上次成功：{{ (schedule.last_success_at|local_datetime) if schedule.last_success_at else '尚未成功' }}</small>
+        <small>下次计划：{{ (schedule.next_due_at|local_datetime) if schedule.next_due_at else '等待安排' }}</small>
         {% if schedule.last_error %}<p class="error">{{ schedule.last_error }}</p>{% endif %}
         <form method="post" action="/settings/sync/{{ schedule.source }}"><button class="text-button">立即更新</button></form>
       </section>
@@ -85,7 +91,7 @@
     <header><p class="eyebrow">ACTIVITY</p><h2>最近同步与 API 用量</h2></header>
     <div class="settings-card">
       <table><thead><tr><th>来源</th><th>状态</th><th>新增/读取</th><th>开始时间</th><th>信息</th></tr></thead><tbody>
-        {% for run in runs %}<tr><td>{{ run.source }}</td><td><span class="status status-{{ run.status.value }}">{{ run.status.value }}</span></td><td>{{ run.items_created }}/{{ run.items_seen }}</td><td>{{ run.started_at.strftime('%m-%d %H:%M') }}</td><td>{{ run.error or '—' }}</td></tr>{% else %}<tr><td colspan="5">还没有同步记录。</td></tr>{% endfor %}
+        {% for run in runs %}<tr><td>{{ run.source }}</td><td><span class="status status-{{ run.status.value }}">{{ run.status.value }}</span></td><td>{{ run.items_created }}/{{ run.items_seen }}</td><td>{{ run.started_at|local_datetime('%m-%d %H:%M') }}</td><td>{{ run.error or '—' }}</td></tr>{% else %}<tr><td colspan="5">还没有同步记录。</td></tr>{% endfor %}
       </tbody></table>
       <div class="usage-list">{% for service, requests, tokens in usage %}<span><strong>{{ service }}</strong> {{ requests or 0 }} requests · {{ tokens or 0 }} tokens</span>{% else %}<span class="muted">尚未产生外部 API 用量。</span>{% endfor %}</div>
     </div>

@@ -1,7 +1,7 @@
 import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from dateutil.parser import isoparse
@@ -13,6 +13,9 @@ from .cache import DailyResponseCache
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
 ARXIV_ID_PATTERN = re.compile(r"(?:abs/)?([^/]+?)(?:v\d+)?$")
+ARXIV_CACHE_MAX_AGE = timedelta(minutes=5)
+ARXIV_REQUEST_ATTEMPTS = 3
+ARXIV_MAX_RETRY_AFTER_SECONDS = 30.0
 
 
 def normalize_arxiv_id(value: str) -> str:
@@ -89,30 +92,41 @@ class ArxivAdapter(SourceAdapter):
 
     def _fetch_page(self, category_query: str, start: int, count: int) -> str:
         cache_key = f"{category_query}|{start}|{count}"
-        cached = self.cache.get(cache_key)
+        cached = self.cache.get(cache_key, max_age=ARXIV_CACHE_MAX_AGE)
         if cached is not None:
             return cached
-        if self._last_network_request is not None:
-            elapsed = time.monotonic() - self._last_network_request
-            if elapsed < 3.0:
-                time.sleep(3.0 - elapsed)
-        response = self.client.get(
-            "https://export.arxiv.org/api/query",
-            params={
-                "search_query": category_query,
-                "start": start,
-                "max_results": count,
-                "sortBy": "submittedDate",
-                "sortOrder": "descending",
-            },
-            headers={
-                "User-Agent": "arxiv-article-updater/0.1 (research paper discovery; personal use)"
-            },
-        )
-        self._last_network_request = time.monotonic()
-        response.raise_for_status()
-        self.cache.put(cache_key, response.text)
-        return response.text
+        for attempt in range(ARXIV_REQUEST_ATTEMPTS):
+            if self._last_network_request is not None:
+                elapsed = time.monotonic() - self._last_network_request
+                if elapsed < 3.0:
+                    time.sleep(3.0 - elapsed)
+            response = self.client.get(
+                "https://export.arxiv.org/api/query",
+                params={
+                    "search_query": category_query,
+                    "start": start,
+                    "max_results": count,
+                    "sortBy": "submittedDate",
+                    "sortOrder": "descending",
+                },
+                headers={
+                    "User-Agent": (
+                        "arxiv-article-updater/0.1 (research paper discovery; personal use)"
+                    )
+                },
+            )
+            self._last_network_request = time.monotonic()
+            if response.status_code != 429 or attempt == ARXIV_REQUEST_ATTEMPTS - 1:
+                response.raise_for_status()
+                self.cache.put(cache_key, response.text)
+                return response.text
+            try:
+                retry_after = float(response.headers.get("Retry-After", "3"))
+            except ValueError:
+                retry_after = 3.0
+            time.sleep(min(max(retry_after, 3.0), ARXIV_MAX_RETRY_AFTER_SECONDS))
+
+        raise RuntimeError("arXiv request attempts exhausted")
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         category_query = " OR ".join(

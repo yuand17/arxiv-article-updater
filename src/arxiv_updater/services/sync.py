@@ -4,6 +4,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..datetime_utils import as_utc
 from ..db import SessionLocal
 from ..models import (
     ApiUsage,
@@ -25,12 +26,6 @@ from .papers import upsert_paper
 def _month_start() -> datetime:
     now = datetime.now(UTC)
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-
-def _as_utc(value: datetime) -> datetime:
-    """SQLite may return legacy timestamps without tzinfo; treat those as UTC."""
-
-    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 def _serpapi_queries_this_month(db: Session) -> int:
@@ -125,7 +120,7 @@ def sync_sources(db: Session, source: str = "all") -> list[SyncRun]:
             .order_by(SyncRun.finished_at.desc())
         )
         since = (
-            _as_utc(previous.finished_at) - timedelta(days=1)
+            as_utc(previous.finished_at) - timedelta(days=1)
             if previous and previous.finished_at
             else datetime.now(UTC) - timedelta(days=14)
         )

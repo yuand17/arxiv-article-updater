@@ -1,6 +1,6 @@
 import ipaddress
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
@@ -12,7 +12,9 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from .arxiv_schedule import next_arxiv_update_at
 from .config import get_settings
+from .datetime_utils import format_local_datetime
 from .db import get_db, init_db
 from .models import (
     ApiUsage,
@@ -59,6 +61,13 @@ def tracked_author_count(paper: Paper) -> int:
 
 templates.env.globals["source_label"] = source_label
 templates.env.globals["tracked_author_count"] = tracked_author_count
+
+
+def local_datetime(value: datetime | None, pattern: str = "%Y-%m-%d %H:%M") -> str:
+    return format_local_datetime(value, get_settings().timezone, pattern)
+
+
+templates.env.filters["local_datetime"] = local_datetime
 
 
 def _is_public_https(value: str) -> bool:
@@ -366,7 +375,11 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         if schedule:
             schedule.interval_days = interval_days
             schedule.enabled = enabled == "on"
-            schedule.next_due_at = utcnow() + timedelta(days=interval_days)
+            schedule.next_due_at = (
+                next_arxiv_update_at(utcnow())
+                if source == "arxiv"
+                else utcnow() + timedelta(days=interval_days)
+            )
             schedule.updated_at = utcnow()
             db.commit()
         return RedirectResponse("/settings", status_code=303)

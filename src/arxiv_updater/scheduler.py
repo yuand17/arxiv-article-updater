@@ -8,6 +8,8 @@ from apscheduler.schedulers.base import BaseScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .arxiv_schedule import next_arxiv_update_at
+from .datetime_utils import as_utc
 from .db import SessionLocal
 from .models import SourceSchedule, SyncStatus, utcnow
 
@@ -18,16 +20,18 @@ DEFAULT_SOURCE_INTERVALS = {
     "journals": 7,
 }
 RETRY_DELAY = timedelta(hours=6)
-CHECK_INTERVAL_MINUTES = 15
+RATE_LIMIT_RETRY_DELAY = timedelta(minutes=30)
+CHECK_INTERVAL_MINUTES = 5
 _source_locks = {name: threading.Lock() for name in DEFAULT_SOURCE_INTERVALS}
 
 
 def _aware(value: datetime | None) -> datetime | None:
-    return value if value is None or value.tzinfo else value.replace(tzinfo=UTC)
+    return as_utc(value)
 
 
 def ensure_source_schedules(db: Session, *, now: datetime | None = None) -> None:
-    now = now or utcnow()
+    now = as_utc(now or utcnow())
+    assert now is not None
     created = False
     for source, interval_days in DEFAULT_SOURCE_INTERVALS.items():
         if db.get(SourceSchedule, source) is None:
@@ -44,13 +48,27 @@ def ensure_source_schedules(db: Session, *, now: datetime | None = None) -> None
         db.commit()
 
 
-def _set_next_due(schedule: SourceSchedule, *, now: datetime, succeeded: bool) -> None:
+def _set_next_due(
+    schedule: SourceSchedule,
+    *,
+    now: datetime,
+    succeeded: bool,
+    error: str = "",
+) -> None:
+    now = as_utc(now)
+    assert now is not None
     if succeeded:
         schedule.last_success_at = now
-        schedule.next_due_at = now + timedelta(days=schedule.interval_days)
+        schedule.next_due_at = (
+            next_arxiv_update_at(now)
+            if schedule.source == "arxiv"
+            else now + timedelta(days=schedule.interval_days)
+        )
         schedule.last_error = ""
     else:
-        schedule.next_due_at = now + RETRY_DELAY
+        schedule.next_due_at = now + (
+            RATE_LIMIT_RETRY_DELAY if "429" in error else RETRY_DELAY
+        )
 
 
 def run_source_update(db: Session, source: str, *, now: datetime | None = None) -> bool:
@@ -66,7 +84,8 @@ def run_source_update(db: Session, source: str, *, now: datetime | None = None) 
         schedule = db.get(SourceSchedule, source)
         if schedule is None:
             return False
-        now = now or utcnow()
+        now = as_utc(now or utcnow())
+        assert now is not None
         schedule.last_attempt_at = now
         db.commit()
         from .services.sync import sync_sources
@@ -74,7 +93,7 @@ def run_source_update(db: Session, source: str, *, now: datetime | None = None) 
         run = sync_sources(db, source)[0]
         succeeded = run.status == SyncStatus.SUCCESS
         current = db.get(SourceSchedule, source) or schedule
-        _set_next_due(current, now=utcnow(), succeeded=succeeded)
+        _set_next_due(current, now=utcnow(), succeeded=succeeded, error=run.error or "")
         if not succeeded:
             current.last_error = run.error or "同步失败"
         db.commit()

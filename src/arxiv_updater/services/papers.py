@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
+from ..datetime_utils import as_utc
 from ..models import Paper, PaperSource, utcnow
 from ..sources import PaperCandidate
 
@@ -100,10 +101,12 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
         if candidate.canonical_url and not paper.canonical_url:
             paper.canonical_url = candidate.canonical_url
         paper.categories = sorted(set(paper.categories or []) | set(candidate.categories))
-        if candidate.updated_at and (
-            not paper.updated_at or candidate.updated_at > paper.updated_at
+        candidate_updated_at = as_utc(candidate.updated_at)
+        paper_updated_at = as_utc(paper.updated_at)
+        if candidate_updated_at and (
+            paper_updated_at is None or candidate_updated_at > paper_updated_at
         ):
-            paper.updated_at = candidate.updated_at
+            paper.updated_at = candidate_updated_at
 
     source = db.scalar(
         select(PaperSource).where(
