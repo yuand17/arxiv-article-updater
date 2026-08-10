@@ -462,6 +462,22 @@ def test_journal_discovery_rejects_private_redirect_before_requesting_it():
     assert requested_hosts == ["journal.example"]
 
 
+def test_journal_discovery_turns_connection_failures_into_a_form_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection reset", request=request)
+
+    public = lambda *args, **kwargs: [  # noqa: E731
+        (2, 1, 6, "", ("93.184.216.34", 443))
+    ]
+    with pytest.raises(JournalDiscoveryError, match="无法连接期刊官网"):
+        discover_journal(
+            "Example Physics",
+            "https://journal.example/",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+            resolver=public,
+        )
+
+
 def test_activity_panels_use_stable_cursor_pagination(app_client):
     client, session_factory, models = app_client
     now = datetime.now(UTC)

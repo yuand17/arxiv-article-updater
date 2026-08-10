@@ -8,6 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dateutil.parser import isoparse, parse
 
+from ..journal_network import get_journal_network
 from .base import PaperCandidate, SourceAdapter
 
 
@@ -189,7 +190,7 @@ class JournalAdapter(SourceAdapter):
         client: httpx.Client | None = None,
     ) -> None:
         self.feeds = feeds if feeds is not None else []
-        self.client = client or httpx.Client(timeout=30, follow_redirects=True)
+        self.client = client or get_journal_network().client
         self.errors: list[str] = []
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:

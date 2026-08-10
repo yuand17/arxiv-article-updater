@@ -206,6 +206,33 @@ def test_local_settings_discovers_then_confirms_a_journal(app_client, monkeypatc
         assert feed.issn_online == "1234-5678"
         assert len(feed.endpoints) == 1
 
+    second_preview = JournalDiscoveryPreview(
+        token="second-preview-token",
+        name="Example Quantum",
+        homepage_url="https://journals.example.org/quantum",
+        canonical_domain="journals.example.org",
+        issn_online="2345-6789",
+        issn_print="",
+        scope_kind="physics",
+        endpoints=[DiscoveredEndpoint("rss", "https://journals.example.org/quantum.rss", 10)],
+        scanned_count=3,
+        nonresearch_filtered=0,
+        nonphysics_filtered=0,
+        papers=[PreviewPaper("Second quantum result", "B. Author", "2026-08-10")],
+    )
+    monkeypatch.setattr(
+        "arxiv_updater.web.discover_journal", lambda name, url: second_preview
+    )
+    response = client.post(
+        "/settings/journals/discover",
+        data={
+            "name": "Example Quantum",
+            "homepage_url": "https://journals.example.org/quantum",
+        },
+    )
+    assert response.status_code == 200
+    assert "Second quantum result" in response.text
+
 
 def test_manual_scirate_sync_enables_human_chrome_assistance(app_client, monkeypatch):
     client, _, _ = app_client

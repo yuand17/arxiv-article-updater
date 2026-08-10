@@ -14,6 +14,7 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 
+from ..journal_network import get_journal_network
 from ..sources.journals import JournalAdapter, JournalFeed, parse_journal_feed
 from .article_classification import classify_journal_candidate, infer_journal_scope
 
@@ -97,11 +98,16 @@ def _safe_get(
 ) -> httpx.Response:
     current_url = validate_public_https(url, resolver=resolver)
     for _redirect in range(6):
-        response = client.get(
-            current_url,
-            headers={"User-Agent": "arxiv-updater/0.2 (personal research library)"},
-            follow_redirects=False,
-        )
+        try:
+            response = client.get(
+                current_url,
+                headers={"User-Agent": "arxiv-updater/0.2 (personal research library)"},
+                follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            raise JournalDiscoveryError(
+                "无法连接期刊官网或官方来源，请检查网址后重试。"
+            ) from exc
         if response.is_redirect:
             location = response.headers.get("location")
             if not location:
@@ -277,12 +283,18 @@ def discover_journal(
     homepage_url: str,
     *,
     client: httpx.Client | None = None,
-    resolver=socket.getaddrinfo,
+    resolver=None,
 ) -> JournalDiscoveryPreview:
     if not name.strip():
         raise JournalDiscoveryError("请填写期刊名称。")
+    if client is None and resolver is None:
+        network = get_journal_network()
+        client = network.client
+        resolver = network.resolver
+    else:
+        client = client or httpx.Client(timeout=20, follow_redirects=True, trust_env=False)
+        resolver = resolver or socket.getaddrinfo
     homepage_url = validate_public_https(homepage_url, resolver=resolver)
-    client = client or httpx.Client(timeout=20, follow_redirects=True)
     homepage = _safe_get(client, homepage_url, resolver=resolver)
     content_type = homepage.headers.get("content-type", "").lower()
     if "html" not in content_type and not feedparser.parse(homepage.content).entries:
@@ -295,15 +307,8 @@ def discover_journal(
     canonical_domain = (urlparse(canonical_url).hostname or "").lower()
     scope_kind = infer_journal_scope(canonical_name)
 
-    candidates = _publisher_endpoints(canonical_name, canonical_url)
-    candidates.extend(
-        _bounded_endpoint_candidates(
-            client,
-            canonical_url,
-            soup,
-            resolver=resolver,
-        )
-    )
+    publisher_candidates = _publisher_endpoints(canonical_name, canonical_url)
+    candidates = list(publisher_candidates)
     if feedparser.parse(homepage.content).entries:
         candidates.append(DiscoveredEndpoint("rss", str(homepage.url), 5))
     deduplicated: dict[str, DiscoveredEndpoint] = {}
@@ -343,55 +348,76 @@ def discover_journal(
     accepted_papers: list[PreviewPaper] = []
     parsed_any = False
     scanned = nonresearch = nonphysics = 0
-    for endpoint in sorted(deduplicated.values(), key=lambda item: item.priority):
-        try:
-            feed = JournalFeed(
-                canonical_name,
-                endpoint.url,
-                issn_online or issn_print,
-                endpoint.kind,
-            )
-            if endpoint.kind == "crossref":
-                parsed = JournalAdapter(feeds=[feed], client=client).fetch(
-                    datetime.now(UTC) - timedelta(days=14)
+    attempted_endpoints: set[str] = set()
+
+    def inspect_endpoints(endpoints: list[DiscoveredEndpoint]) -> None:
+        nonlocal parsed_any, scanned, nonresearch, nonphysics
+        for endpoint in sorted(endpoints, key=lambda item: item.priority):
+            if endpoint.url in attempted_endpoints:
+                continue
+            attempted_endpoints.add(endpoint.url)
+            try:
+                feed = JournalFeed(
+                    canonical_name,
+                    endpoint.url,
+                    issn_online or issn_print,
+                    endpoint.kind,
                 )
-            else:
-                response = _safe_get(client, endpoint.url, resolver=resolver)
-                parsed = [
-                    candidate
-                    for candidate in parse_journal_feed(response.text, feed)
-                    if candidate.published_at
-                    and (candidate.doi or candidate.canonical_url)
-                ]
-        except (httpx.HTTPError, JournalDiscoveryError, ValueError):
-            continue
-        if not parsed:
-            continue
-        parsed_any = True
-        endpoint_papers: list[PreviewPaper] = []
-        scanned += len(parsed)
-        for candidate in parsed:
-            result = classify_journal_candidate(
-                candidate, journal_name=canonical_name, scope_kind=scope_kind
-            )
-            if not result.is_original_research:
-                nonresearch += 1
-            elif not result.is_physics:
-                nonphysics += 1
-            else:
-                endpoint_papers.append(
-                    PreviewPaper(
-                        candidate.title,
-                        ", ".join(candidate.authors),
-                        candidate.published_at.date().isoformat()
-                        if candidate.published_at
-                        else "日期未知",
+                if endpoint.kind == "crossref":
+                    parsed = JournalAdapter(feeds=[feed], client=client).fetch(
+                        datetime.now(UTC) - timedelta(days=14)
                     )
+                else:
+                    response = _safe_get(client, endpoint.url, resolver=resolver)
+                    parsed = [
+                        candidate
+                        for candidate in parse_journal_feed(response.text, feed)
+                        if candidate.published_at
+                        and (candidate.doi or candidate.canonical_url)
+                    ]
+            except (httpx.HTTPError, JournalDiscoveryError, ValueError):
+                continue
+            if not parsed:
+                continue
+            parsed_any = True
+            endpoint_papers: list[PreviewPaper] = []
+            scanned += len(parsed)
+            for candidate in parsed:
+                result = classify_journal_candidate(
+                    candidate, journal_name=canonical_name, scope_kind=scope_kind
                 )
-        if endpoint_papers:
-            accepted_endpoints.append(endpoint)
-            accepted_papers.extend(endpoint_papers)
-            break
+                if not result.is_original_research:
+                    nonresearch += 1
+                elif not result.is_physics:
+                    nonphysics += 1
+                else:
+                    endpoint_papers.append(
+                        PreviewPaper(
+                            candidate.title,
+                            ", ".join(candidate.authors),
+                            candidate.published_at.date().isoformat()
+                            if candidate.published_at
+                            else "日期未知",
+                        )
+                    )
+            if endpoint_papers:
+                accepted_endpoints.append(endpoint)
+                accepted_papers.extend(endpoint_papers)
+                return
+
+    inspect_endpoints(publisher_candidates)
+    if not parsed_any and not accepted_papers:
+        discovered_candidates = _bounded_endpoint_candidates(
+            client,
+            canonical_url,
+            soup,
+            resolver=resolver,
+        )
+        for endpoint in discovered_candidates:
+            current = deduplicated.get(endpoint.url)
+            if current is None or endpoint.priority < current.priority:
+                deduplicated[endpoint.url] = endpoint
+        inspect_endpoints(list(deduplicated.values()))
     if not parsed_any:
         raise JournalDiscoveryError("没有发现可解析且字段完整的官方期刊来源。")
     if not accepted_papers:
