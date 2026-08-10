@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Literal, Protocol, cast
 
-_keyring: ModuleType | None
-try:
-    import keyring as _keyring
-except ImportError:  # pragma: no cover - keyring is installed only on Windows
-    _keyring = None
+
+def _load_keyring_module() -> ModuleType | None:
+    try:
+        return importlib.import_module("keyring")
+    except ImportError:  # pragma: no cover - keyring is installed only on Windows
+        return None
+
+
+_keyring = _load_keyring_module()
 
 ServiceName = Literal["deepseek", "serpapi"]
 CredentialSource = Literal["credential_manager", "environment", "none"]
