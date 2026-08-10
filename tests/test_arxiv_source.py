@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from arxiv_updater.config import Settings
 from arxiv_updater.services.papers import normalize_doi, normalize_title, upsert_paper
 from arxiv_updater.sources.arxiv import ArxivAdapter, parse_arxiv_feed
+from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.cache import DailyResponseCache
 
 FIXTURE = Path(__file__).parent / "fixtures" / "arxiv_feed.xml"
@@ -48,6 +49,35 @@ def test_upsert_is_idempotent(app_client):
         assert second.created is False
         assert db.scalar(select(func.count()).select_from(models.Paper)) == 1
         assert db.scalar(select(func.count()).select_from(models.PaperSource)) == 1
+
+
+def test_scholar_upsert_deduplicates_the_same_paper_across_tracked_authors(app_client):
+    _, session_factory, models = app_client
+    first = PaperCandidate(
+        source="scholar",
+        external_id="author-a:paper-1",
+        scholar_citation_id="author-a:paper-1",
+        title="A Shared Quantum Result",
+        authors=["Alice Example", "Bob Example"],
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
+        metadata={"tracked_author_id": "author-a"},
+    )
+    second = replace(
+        first,
+        external_id="author-b:paper-1",
+        scholar_citation_id="author-b:paper-1",
+        metadata={"tracked_author_id": "author-b"},
+    )
+
+    with session_factory() as db:
+        first_result = upsert_paper(db, first)
+        second_result = upsert_paper(db, second)
+        db.commit()
+
+        assert first_result.created is True
+        assert second_result.created is False
+        assert db.scalar(select(func.count()).select_from(models.Paper)) == 1
+        assert db.scalar(select(func.count()).select_from(models.PaperSource)) == 2
 
 
 def test_upsert_normalizes_legacy_naive_sqlite_updated_at(app_client):

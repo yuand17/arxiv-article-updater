@@ -116,7 +116,7 @@
     <section class="settings-card" id="authors-card">
       <span class="step-number">02</span>
       <h2>Google Scholar 重点作者</h2>
-      <p>粘贴公开作者主页链接。同步使用 SerpAPI；来源没有 abstract 时会明确显示暂无摘要。</p>
+      <p>粘贴普通公开作者主页链接即可；后台会自动按发表时间同步每位作者最近 10 篇并去重，无需手动切换 Scholar 排序方式。来源没有 abstract 时会明确显示暂无摘要。</p>
       <form method="post" action="/settings/authors" class="inline-form" hx-post="/settings/authors" hx-target="#authors-card" hx-select="#authors-card" hx-swap="outerHTML">
         <input type="url" name="profile_url" required placeholder="https://scholar.google.com/citations?user=..." {{ 'disabled' if not serpapi.enabled }}>
         <button type="submit" {{ 'disabled' if not serpapi.enabled }}>添加作者</button>

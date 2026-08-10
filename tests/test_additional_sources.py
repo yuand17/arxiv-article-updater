@@ -23,6 +23,13 @@ def test_parse_scholar_author_id():
         parse_scholar_author_id("https://scholar.google.com/citations?user=Qexu0QwAAAAJ&hl=en")
         == "Qexu0QwAAAAJ"
     )
+    assert (
+        parse_scholar_author_id(
+            "https://scholar.google.com/citations?user=Qexu0QwAAAAJ"
+            "&view_op=list_works&sortby=citedby&cstart=0&pagesize=100"
+        )
+        == "Qexu0QwAAAAJ"
+    )
     with pytest.raises(ValueError):
         parse_scholar_author_id("https://example.com/citations?user=Qexu0QwAAAAJ")
 
@@ -77,6 +84,46 @@ def test_scholar_http_errors_never_include_the_serpapi_key():
     with pytest.raises(RuntimeError, match="SerpAPI 返回 HTTP 401") as caught:
         adapter.fetch()
     assert secret not in str(caught.value)
+
+
+def test_scholar_fetch_uses_date_sort_and_keeps_only_latest_ten():
+    observed_params: dict[str, str] = {}
+
+    def latest_articles(request: httpx.Request) -> httpx.Response:
+        observed_params.update(request.url.params)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "author": {"name": "Recent Researcher"},
+                "articles": [
+                    {
+                        "citation_id": f"author:paper-{index}",
+                        "title": f"Date-sorted paper {index}",
+                        "authors": "Recent Researcher",
+                        "year": "2026",
+                    }
+                    for index in range(12)
+                ],
+            },
+        )
+
+    adapter = ScholarAdapter(
+        ["Qexu0QwAAAAJ"],
+        settings=Settings(serpapi_api_key="test-key"),
+        client=httpx.Client(transport=httpx.MockTransport(latest_articles)),
+    )
+
+    papers = adapter.fetch()
+
+    assert observed_params["sort"] == "pubdate"
+    assert observed_params["num"] == "10"
+    assert [paper.title for paper in papers] == [
+        f"Date-sorted paper {index}" for index in range(10)
+    ]
+    assert all(
+        paper.metadata["tracked_author_id"] == "Qexu0QwAAAAJ" for paper in papers
+    )
 
 
 def test_parse_scirate_page():

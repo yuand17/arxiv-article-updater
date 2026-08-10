@@ -9,6 +9,7 @@ from ..security import redact_sensitive_text
 from .base import PaperCandidate, SourceAdapter
 
 AUTHOR_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,32}$")
+RECENT_ARTICLE_LIMIT = 10
 
 
 def parse_scholar_author_id(value: str) -> str:
@@ -107,7 +108,7 @@ class ScholarAdapter(SourceAdapter):
                     "engine": "google_scholar_author",
                     "author_id": author_id,
                     "sort": "pubdate",
-                    "num": 100,
+                    "num": RECENT_ARTICLE_LIMIT,
                     "api_key": self.settings.serpapi_api_key,
                 },
             )
@@ -124,6 +125,7 @@ class ScholarAdapter(SourceAdapter):
                     )
                 )
             name, candidates = parse_scholar_response(payload)
+            candidates = candidates[:RECENT_ARTICLE_LIMIT]
             self.author_names[author_id] = name
             citation_count = parse_scholar_citation_count(payload)
             if citation_count is not None:
