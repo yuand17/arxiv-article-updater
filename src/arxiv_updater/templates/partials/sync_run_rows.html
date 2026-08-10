@@ -1,6 +1,3 @@
 {% for run in runs %}
 <tr><td>{{ run.source }}</td><td><span class="status status-{{ run.status.value }}">{{ run.status.value }}</span></td><td>{{ run.items_created }}/{{ run.items_seen }}</td><td>{{ run.started_at|local_datetime('%m-%d %H:%M') }}</td><td class="activity-message">{{ run.error or '—' }}</td></tr>
 {% endfor %}
-{% if run_next_cursor %}
-<tr class="activity-sentinel" hx-get="/settings/activity/sync-runs?cursor={{ run_next_cursor|urlencode }}" hx-trigger="intersect once" hx-swap="outerHTML"><td colspan="5">正在加载更早记录…</td></tr>
-{% endif %}

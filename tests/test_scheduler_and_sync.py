@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from arxiv_updater.arxiv_schedule import next_arxiv_update_at
+from arxiv_updater.config import Settings
 from arxiv_updater.scheduler import _set_next_due, ensure_source_schedules, run_source_update
 from arxiv_updater.services import sync as sync_module
 from arxiv_updater.sources.base import PaperCandidate
@@ -78,6 +79,23 @@ def test_scholar_sync_fails_before_partial_update_when_budget_is_insufficient(ap
             sync_module._build_adapter(db, "scholar")
 
 
+def test_scholar_sync_is_skipped_without_an_enabled_serpapi_key(app_client, monkeypatch):
+    _, session_factory, models = app_client
+    monkeypatch.setattr(
+        sync_module,
+        "get_settings",
+        lambda: Settings(serpapi_api_key=""),
+    )
+
+    with session_factory() as db:
+        run = sync_module.sync_sources(db, "scholar")[0]
+
+        assert run.status == models.SyncStatus.SKIPPED
+        assert run.items_seen == 0
+        assert "SerpAPI 未启用" in (run.error or "")
+        assert db.query(models.ApiUsage).filter_by(service="serpapi").count() == 0
+
+
 def test_arxiv_rate_limit_retries_in_thirty_minutes(app_client):
     _, session_factory, models = app_client
     with session_factory() as db:
@@ -148,6 +166,11 @@ def test_scholar_sync_updates_author_citation_count(app_client, monkeypatch):
     _, session_factory, models = app_client
     adapter = _ScholarCitationAdapter()
     monkeypatch.setattr(sync_module, "_build_adapter", lambda db, name, **kwargs: adapter)
+    monkeypatch.setattr(
+        sync_module,
+        "get_settings",
+        lambda: Settings(serpapi_api_key="test-serpapi-key"),
+    )
     with session_factory() as db:
         author = models.TrackedAuthor(
             scholar_author_id="author1234",

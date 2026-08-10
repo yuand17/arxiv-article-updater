@@ -22,7 +22,7 @@ flowchart TD
 - 只支持本机 SQLite，Uvicorn 只监听 `127.0.0.1`、`::1` 或 `localhost`。
 - 开发模式使用 `arxiv-updater serve`；日常使用由 `.pyw` 托盘控制器在同一生命周期内拥有 Uvicorn 和调度器。
 - Windows 互斥量保证单实例，本机 IPC 只处理 `OPEN` 命令；控制器不会结束或接管未知端口进程。
-- API key 只从未跟踪的 `.env` 读取，不写入数据库、日志、页面或测试。
+- API key 由设置页写入当前 Windows 用户的凭据管理器；旧版 `.env` 只作兼容回退。密钥不写入数据库、日志、页面或测试，关闭开关会让运行时配置返回空密钥。
 
 ## 主要数据流
 
@@ -32,7 +32,7 @@ flowchart TD
 - `interactions` 保存四种单用户信号：`ABSTRACT_VIEWED`、`SAVED`、`FULLTEXT`、`DISMISSED`。
 - `app_preferences.featured_paper_count` 是三天精选篇数的唯一来源，默认 66。
 - `recommendation_batches` 记录三日窗口、候选数、短名单数、精排成功/回退数、来源统计和算法版本；`recommendation_items` 只保存最终选中的论文。
-- `cleanup_runs`、`sync_runs` 和 `api_usage` 提供可审计运行记录，API 用量不含密钥。
+- `cleanup_runs`、`sync_runs` 和 `api_usage` 提供可审计运行记录，API 用量不含密钥；设置页只查询近 7 天且每栏最多 100 条。
 
 ## 恢复与生命周期
 

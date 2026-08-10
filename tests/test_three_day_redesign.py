@@ -1,4 +1,3 @@
-import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -478,11 +477,11 @@ def test_journal_discovery_turns_connection_failures_into_a_form_error():
         )
 
 
-def test_activity_panels_use_stable_cursor_pagination(app_client):
+def test_activity_panels_show_at_most_one_hundred_rows_from_the_last_seven_days(app_client):
     client, session_factory, models = app_client
     now = datetime.now(UTC)
     with session_factory() as db:
-        for index in range(25):
+        for index in range(105):
             created_at = now - timedelta(minutes=index)
             db.add(
                 models.SyncRun(
@@ -495,20 +494,37 @@ def test_activity_panels_use_stable_cursor_pagination(app_client):
             db.add(
                 models.ApiUsage(
                     service="deepseek",
-                    operation="featured_rerank",
+                    operation=f"recent-{index}",
                     created_at=created_at,
                 )
             )
+        old = now - timedelta(days=8)
+        db.add(
+            models.SyncRun(
+                source="old-sync-marker",
+                status=models.SyncStatus.SUCCESS,
+                started_at=old,
+                finished_at=old,
+            )
+        )
+        db.add(
+            models.ApiUsage(
+                service="deepseek",
+                operation="old-usage-marker",
+                created_at=old,
+            )
+        )
         db.commit()
 
     page = client.get("/settings")
     assert page.status_code == 200
-    run_cursor = re.search(r"sync-runs\?cursor=([^\"]+)", page.text)
-    usage_cursor = re.search(r"api-usage\?cursor=([^\"]+)", page.text)
-    assert run_cursor and usage_cursor
-    older_runs = client.get(f"/settings/activity/sync-runs?cursor={run_cursor.group(1)}")
-    older_usage = client.get(f"/settings/activity/api-usage?cursor={usage_cursor.group(1)}")
-    assert older_runs.text.count("<tr") == 5
-    assert older_usage.text.count("<tr") == 5
+    assert page.text.count("<tr><td>arxiv</td>") == 100
+    assert "recent-99" in page.text
+    assert "recent-100" not in page.text
+    assert "old-sync-marker" not in page.text
+    assert "old-usage-marker" not in page.text
+    assert "仅显示近 7 天记录，每栏最多 100 条" in page.text
+    assert "sync-runs?cursor=" not in page.text
+    assert "api-usage?cursor=" not in page.text
     assert 'aria-label="最近同步历史"' in page.text
     assert 'aria-label="API 用量明细"' in page.text

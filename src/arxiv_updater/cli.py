@@ -5,7 +5,7 @@ import typer
 import uvicorn
 
 from . import __version__
-from .config import get_settings
+from .config import get_external_service_states
 from .db import init_db, migrate_database, sqlite_database_path
 
 app = typer.Typer(no_args_is_help=True, help="arXiv Updater 本地管理命令")
@@ -46,15 +46,24 @@ def serve(
 def doctor() -> None:
     """Show local paths and external service configuration status without exposing keys."""
 
-    settings = get_settings()
+    services = get_external_service_states()
     database_path = sqlite_database_path()
+
+    def service_status(name: str) -> str:
+        state = services[name]
+        if state.enabled:
+            return "configured and enabled"
+        if state.has_api_key:
+            return "configured but disabled"
+        return "not configured"
+
     checks = {
         "version": __version__,
         "python_host": socket.gethostname(),
         "database": str(database_path) if database_path else "SQLite in memory",
         "database_parent": str(Path("data").resolve()),
-        "serpapi": "configured" if settings.serpapi_api_key else "not configured",
-        "deepseek": "configured" if settings.deepseek_api_key else "not configured",
+        "serpapi": service_status("serpapi"),
+        "deepseek": service_status("deepseek"),
     }
     for key, value in checks.items():
         typer.echo(f"{key}: {value}")

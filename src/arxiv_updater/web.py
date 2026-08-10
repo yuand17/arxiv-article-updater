@@ -1,21 +1,30 @@
-import base64
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
+from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from .arxiv_schedule import next_arxiv_update_at
-from .config import get_settings
+from .config import Settings, get_external_service_states, get_settings
 from .datetime_utils import format_local_datetime
 from .db import get_db, init_db
+from .external_services import (
+    SUPPORTED_SERVICES,
+    CredentialStoreError,
+    CredentialValidationError,
+    ServiceName,
+    clear_external_service,
+    public_service_view,
+    save_external_service,
+)
 from .models import (
     ApiUsage,
     Interaction,
@@ -57,7 +66,12 @@ TOAST_MESSAGES = {
     "journal_removed": ("success", "期刊已移除", "既有论文将按保留规则处理。"),
     "schedule_saved": ("success", "更新计划已保存", "下次运行时间已经重算。"),
     "sync_started": ("info", "更新已启动", "可在活动记录中查看进度。"),
+    "service_saved": ("success", "外部服务设置已保存", "新的开关状态已立即生效。"),
+    "service_cleared": ("success", "API key 已清除", "服务已关闭，旧版 .env 值也不会重新启用它。"),
 }
+ACTIVITY_WINDOW_DAYS = 7
+ACTIVITY_ROW_LIMIT = 100
+LOCAL_WEB_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def _add_toast(response: Response, key: str) -> Response:
@@ -88,6 +102,20 @@ def _settings_fragment(
     return RedirectResponse(f"/settings?toast={key}", status_code=303)
 
 
+def _local_form_request_is_trusted(request: Request) -> bool:
+    """Reject browser cross-site posts to credential-changing endpoints."""
+
+    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        return False
+    source = request.headers.get("Origin") or request.headers.get("Referer")
+    if not source:
+        return True
+    try:
+        return urlparse(source).hostname in LOCAL_WEB_HOSTS
+    except ValueError:
+        return False
+
+
 def source_label(source: str, metadata: dict) -> str:
     if source == "journal":
         return str(metadata.get("journal") or "期刊")
@@ -115,81 +143,31 @@ def local_datetime(value: datetime | None, pattern: str = "%Y-%m-%d %H:%M") -> s
 templates.env.filters["local_datetime"] = local_datetime
 
 
-def _encode_cursor(value: datetime, item_id: str) -> str:
-    payload = json.dumps([value.isoformat(), item_id], separators=(",", ":")).encode()
-    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
-
-
-def _decode_cursor(value: str) -> tuple[datetime, str] | None:
-    if not value:
-        return None
-    try:
-        padding = "=" * (-len(value) % 4)
-        timestamp, item_id = json.loads(base64.urlsafe_b64decode(value + padding))
-        return datetime.fromisoformat(timestamp), str(item_id)
-    except (ValueError, TypeError, json.JSONDecodeError):
-        return None
-
-
-def _sync_run_page(
-    db: Session, cursor: str = "", limit: int = 20
-) -> tuple[list[SyncRun], str]:
-    statement = select(SyncRun)
-    decoded = _decode_cursor(cursor)
-    if decoded:
-        before, item_id = decoded
-        statement = statement.where(
-            or_(
-                SyncRun.started_at < before,
-                and_(SyncRun.started_at == before, SyncRun.id < item_id),
-            )
-        )
-    rows = db.scalars(
-        statement.order_by(SyncRun.started_at.desc(), SyncRun.id.desc()).limit(limit + 1)
-    ).all()
-    page = list(rows[:limit])
-    next_cursor = (
-        _encode_cursor(page[-1].started_at, page[-1].id) if len(rows) > limit and page else ""
-    )
-    return page, next_cursor
-
-
-def _usage_page(
-    db: Session, cursor: str = "", limit: int = 20
-) -> tuple[list[ApiUsage], str]:
-    statement = select(ApiUsage)
-    decoded = _decode_cursor(cursor)
-    if decoded:
-        before, item_id = decoded
-        statement = statement.where(
-            or_(
-                ApiUsage.created_at < before,
-                and_(ApiUsage.created_at == before, ApiUsage.id < item_id),
-            )
-        )
-    rows = db.scalars(
-        statement.order_by(ApiUsage.created_at.desc(), ApiUsage.id.desc()).limit(limit + 1)
-    ).all()
-    page = list(rows[:limit])
-    next_cursor = (
-        _encode_cursor(page[-1].created_at, page[-1].id) if len(rows) > limit and page else ""
-    )
-    return page, next_cursor
-
-
 def settings_context(
     db: Session,
     *,
     saved: bool = False,
     journal_error: str = "",
     journal_preview: JournalDiscoveryPreview | None = None,
+    service_error: str = "",
     sync_started: str = "",
 ) -> dict[str, object]:
     ensure_source_schedules(db)
     preferences = get_preferences(db)
-    settings = get_settings()
-    runs, run_next_cursor = _sync_run_page(db)
-    usage_details, usage_next_cursor = _usage_page(db)
+    activity_cutoff = utcnow() - timedelta(days=ACTIVITY_WINDOW_DAYS)
+    runs = db.scalars(
+        select(SyncRun)
+        .where(SyncRun.started_at >= activity_cutoff)
+        .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+        .limit(ACTIVITY_ROW_LIMIT)
+    ).all()
+    usage_details = db.scalars(
+        select(ApiUsage)
+        .where(ApiUsage.created_at >= activity_cutoff)
+        .order_by(ApiUsage.created_at.desc(), ApiUsage.id.desc())
+        .limit(ACTIVITY_ROW_LIMIT)
+    ).all()
+    service_states = get_external_service_states()
     return {
         "preferences": preferences,
         "authors": db.scalars(
@@ -204,23 +182,25 @@ def settings_context(
         ).all(),
         "schedules": db.scalars(select(SourceSchedule).order_by(SourceSchedule.source)).all(),
         "runs": runs,
-        "run_next_cursor": run_next_cursor,
         "usage_details": usage_details,
-        "usage_next_cursor": usage_next_cursor,
         "usage": db.execute(
             select(
                 ApiUsage.service,
                 func.sum(ApiUsage.request_count),
                 func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
-            ).group_by(ApiUsage.service)
+            )
+            .where(ApiUsage.created_at >= activity_cutoff)
+            .group_by(ApiUsage.service)
         ).all(),
-        "service_configured": {
-            "SerpAPI": bool(settings.serpapi_api_key),
-            "DeepSeek": bool(settings.deepseek_api_key),
+        "external_services": {
+            name: public_service_view(state) for name, state in service_states.items()
         },
+        "activity_window_days": ACTIVITY_WINDOW_DAYS,
+        "activity_row_limit": ACTIVITY_ROW_LIMIT,
         "saved": saved,
         "journal_error": journal_error,
         "journal_preview": journal_preview,
+        "service_error": service_error,
         "sync_started": sync_started,
     }
 
@@ -400,24 +380,6 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             ),
         )
 
-    @app.get("/settings/activity/sync-runs", response_class=HTMLResponse)
-    def more_sync_runs(request: Request, db: DbSession, cursor: str = Query("")) -> Response:
-        runs, next_cursor = _sync_run_page(db, cursor)
-        return templates.TemplateResponse(
-            request,
-            "partials/sync_run_rows.html",
-            {"runs": runs, "run_next_cursor": next_cursor},
-        )
-
-    @app.get("/settings/activity/api-usage", response_class=HTMLResponse)
-    def more_api_usage(request: Request, db: DbSession, cursor: str = Query("")) -> Response:
-        usage_details, next_cursor = _usage_page(db, cursor)
-        return templates.TemplateResponse(
-            request,
-            "partials/api_usage_rows.html",
-            {"usage_details": usage_details, "usage_next_cursor": next_cursor},
-        )
-
     @app.post("/settings", response_class=HTMLResponse)
     def save_settings(
         request: Request,
@@ -435,9 +397,86 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         return _action_response(request, "settings_saved")
 
     @app.post("/settings/preferences/rebuild")
-    def rebuild_preferences(request: Request, background_tasks: BackgroundTasks) -> Response:
+    def rebuild_preferences(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        db: DbSession,
+    ) -> Response:
+        if not get_settings().deepseek_api_key:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, service_error="请先开启 DeepSeek 并保存 API key。"),
+                status_code=422,
+            )
         background_tasks.add_task(rebuild_preference_profile_in_background, force=True)
         return _action_response(request, "profile_started")
+
+    @app.post("/settings/services/{service}")
+    def save_optional_service(
+        request: Request,
+        service: str,
+        db: DbSession,
+        enabled: str | None = Form(None),
+        api_key: str = Form(""),
+    ) -> Response:
+        if not _local_form_request_is_trusted(request):
+            return HTMLResponse("已阻止跨站设置请求", status_code=403)
+        if service not in SUPPORTED_SERVICES:
+            return HTMLResponse("未知外部服务", status_code=404)
+        service_name = cast(ServiceName, service)
+        environment = Settings()
+        environment_api_key = (
+            environment.deepseek_api_key
+            if service_name == "deepseek"
+            else environment.serpapi_api_key
+        )
+        try:
+            state = save_external_service(
+                service_name,
+                enabled=enabled == "on",
+                new_api_key=api_key,
+                environment_api_key=environment_api_key,
+            )
+        except (CredentialStoreError, CredentialValidationError) as exc:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, service_error=str(exc)),
+                status_code=422,
+            )
+        get_settings.cache_clear()
+        if service_name == "serpapi":
+            ensure_source_schedules(db)
+            schedule = db.get(SourceSchedule, "scholar")
+            if schedule:
+                schedule.enabled = state.enabled
+                schedule.next_due_at = utcnow() if state.enabled else None
+                schedule.last_error = ""
+                schedule.updated_at = utcnow()
+                db.commit()
+        return _action_response(request, "service_saved")
+
+    @app.post("/settings/services/{service}/clear")
+    def clear_optional_service(request: Request, service: str, db: DbSession) -> Response:
+        if not _local_form_request_is_trusted(request):
+            return HTMLResponse("已阻止跨站设置请求", status_code=403)
+        if service not in SUPPORTED_SERVICES:
+            return HTMLResponse("未知外部服务", status_code=404)
+        service_name = cast(ServiceName, service)
+        try:
+            clear_external_service(service_name)
+        except CredentialStoreError as exc:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, service_error=str(exc)),
+                status_code=422,
+            )
+        get_settings.cache_clear()
+        if service_name == "serpapi":
+            ensure_source_schedules(db)
+        return _action_response(request, "service_cleared")
 
     @app.post("/settings/authors")
     def add_author(
@@ -446,6 +485,13 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         db: DbSession,
         profile_url: str = Form(),
     ) -> Response:
+        if not get_settings().serpapi_api_key:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, service_error="请先开启 SerpAPI 并保存 API key。"),
+                status_code=422,
+            )
         try:
             author_id = parse_scholar_author_id(profile_url)
         except ValueError:
@@ -579,11 +625,18 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     ) -> Response:
         if source not in DEFAULT_SOURCE_INTERVALS or not 1 <= interval_days <= 30:
             return RedirectResponse("/settings?schedule_error=1", status_code=303)
+        if source == "scholar" and not get_settings().serpapi_api_key:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, service_error="SerpAPI 未启用，不能开启 Scholar 更新。"),
+                status_code=422,
+            )
         ensure_source_schedules(db)
         schedule = db.get(SourceSchedule, source)
         if schedule:
             schedule.interval_days = interval_days
-            schedule.enabled = enabled == "on"
+            schedule.enabled = True if source == "scholar" else enabled == "on"
             schedule.next_due_at = (
                 next_arxiv_update_at(utcnow())
                 if source == "arxiv"
@@ -595,10 +648,20 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
 
     @app.post("/settings/sync/{source}")
     def run_source_now(
-        request: Request, source: str, background_tasks: BackgroundTasks
+        request: Request,
+        source: str,
+        background_tasks: BackgroundTasks,
+        db: DbSession,
     ) -> Response:
         if source not in DEFAULT_SOURCE_INTERVALS:
             return HTMLResponse("未知来源", status_code=404)
+        if source == "scholar" and not get_settings().serpapi_api_key:
+            return templates.TemplateResponse(
+                request,
+                "settings.html",
+                settings_context(db, service_error="SerpAPI 未启用，已阻止 Scholar 更新。"),
+                status_code=422,
+            )
         from .scheduler import run_source_update_in_background
 
         background_tasks.add_task(

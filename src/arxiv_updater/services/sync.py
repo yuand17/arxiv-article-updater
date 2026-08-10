@@ -17,6 +17,7 @@ from ..models import (
     TrackedAuthor,
     utcnow,
 )
+from ..security import redact_sensitive_text
 from ..sources.arxiv import ArxivAdapter
 from ..sources.base import PaperCandidate
 from ..sources.journals import JournalAdapter, JournalFeed
@@ -271,6 +272,18 @@ def sync_sources(
     sources = ["arxiv", "scholar", "scirate", "journals"] if source == "all" else [source]
     runs: list[SyncRun] = []
     for name in sources:
+        if name == "scholar" and not get_settings().serpapi_api_key:
+            run = SyncRun(
+                source=name,
+                status=SyncStatus.SKIPPED,
+                started_at=utcnow(),
+                finished_at=utcnow(),
+                error="SerpAPI 未启用，已跳过 Google Scholar 更新。",
+            )
+            db.add(run)
+            db.commit()
+            runs.append(run)
+            continue
         run = SyncRun(source=name, status=SyncStatus.RUNNING)
         db.add(run)
         db.commit()
@@ -345,7 +358,11 @@ def sync_sources(
             db.rollback()
             run = db.get(SyncRun, run.id) or run
             run.status = SyncStatus.FAILED
-            run.error = f"{type(exc).__name__}: {exc}"[:2000]
+            settings = get_settings()
+            run.error = redact_sensitive_text(
+                f"{type(exc).__name__}: {exc}",
+                (settings.serpapi_api_key, settings.deepseek_api_key),
+            )[:2000]
         run.finished_at = utcnow()
         db.add(run)
         db.commit()

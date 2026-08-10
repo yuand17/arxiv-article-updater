@@ -8,6 +8,8 @@
     journal_removed: ["success", "期刊已移除", "既有论文将按保留规则处理。"],
     schedule_saved: ["success", "更新计划已保存", "下次运行时间已经重算。"],
     sync_started: ["info", "更新已启动", "可在活动记录中查看进度。"],
+    service_saved: ["success", "外部服务设置已保存", "新的开关状态已立即生效。"],
+    service_cleared: ["success", "API key 已清除", "服务已关闭，旧版 .env 值也不会重新启用它。"],
   };
   let sequence = 0;
 
@@ -35,6 +37,20 @@
   }
 
   window.showAppToast = showToast;
+  function updateServiceKeyFields(toggle) {
+    const fieldId = toggle.getAttribute("aria-controls");
+    const fields = fieldId ? document.getElementById(fieldId) : null;
+    if (fields) fields.hidden = !toggle.checked;
+  }
+
+  document.addEventListener("change", (event) => {
+    const toggle = event.target.closest("[data-service-toggle]");
+    if (toggle) updateServiceKeyFields(toggle);
+  });
+  document.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-confirm-message]");
+    if (form && !window.confirm(form.dataset.confirmMessage)) event.preventDefault();
+  });
   document.addEventListener("app:toast", (event) => showToast(event.detail || {}));
   document.addEventListener("app:sync-started", async (event) => {
     const { source, after } = event.detail || {};
@@ -74,6 +90,7 @@
     });
   });
   document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll("[data-service-toggle]").forEach(updateServiceKeyFields);
     const key = new URLSearchParams(window.location.search).get("toast");
     if (key && messages[key]) {
       const [level, title, message] = messages[key];

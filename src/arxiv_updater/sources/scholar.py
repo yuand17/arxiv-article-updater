@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from ..config import Settings, get_settings
+from ..security import redact_sensitive_text
 from .base import PaperCandidate, SourceAdapter
 
 AUTHOR_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,32}$")
@@ -110,10 +111,18 @@ class ScholarAdapter(SourceAdapter):
                     "api_key": self.settings.serpapi_api_key,
                 },
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(f"SerpAPI 返回 HTTP {response.status_code}") from exc
             payload = response.json()
             if payload.get("error"):
-                raise RuntimeError(str(payload["error"]))
+                raise RuntimeError(
+                    redact_sensitive_text(
+                        payload["error"],
+                        (self.settings.serpapi_api_key,),
+                    )
+                )
             name, candidates = parse_scholar_response(payload)
             self.author_names[author_id] = name
             citation_count = parse_scholar_citation_count(payload)

@@ -3,10 +3,12 @@ from pathlib import Path
 import httpx
 import pytest
 
+from arxiv_updater.config import Settings
 from arxiv_updater.services.article_classification import classify_journal_candidate
 from arxiv_updater.sources.cache import DailyResponseCache
 from arxiv_updater.sources.journals import JournalFeed, parse_journal_feed
 from arxiv_updater.sources.scholar import (
+    ScholarAdapter,
     parse_scholar_author_id,
     parse_scholar_citation_count,
     parse_scholar_response,
@@ -57,6 +59,24 @@ def test_parse_scholar_citation_count():
     }
     assert parse_scholar_citation_count(payload) == 12345
     assert parse_scholar_citation_count({}) is None
+
+
+def test_scholar_http_errors_never_include_the_serpapi_key():
+    secret = "serpapi-secret-value"
+
+    def unauthorized(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["api_key"] == secret
+        return httpx.Response(401, request=request)
+
+    adapter = ScholarAdapter(
+        ["Qexu0QwAAAAJ"],
+        settings=Settings(serpapi_api_key=secret),
+        client=httpx.Client(transport=httpx.MockTransport(unauthorized)),
+    )
+
+    with pytest.raises(RuntimeError, match="SerpAPI 返回 HTTP 401") as caught:
+        adapter.fetch()
+    assert secret not in str(caught.value)
 
 
 def test_parse_scirate_page():

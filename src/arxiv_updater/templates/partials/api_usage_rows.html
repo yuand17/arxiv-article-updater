@@ -1,6 +1,3 @@
 {% for item in usage_details %}
 <tr><td>{{ item.created_at|local_datetime('%m-%d %H:%M') }}</td><td>{{ item.service }}</td><td>{{ item.operation }}</td><td>{{ item.request_count }}</td><td>{{ item.input_tokens }}</td><td>{{ item.output_tokens }}</td></tr>
 {% endfor %}
-{% if usage_next_cursor %}
-<tr class="activity-sentinel" hx-get="/settings/activity/api-usage?cursor={{ usage_next_cursor|urlencode }}" hx-trigger="intersect once" hx-swap="outerHTML"><td colspan="6">正在加载更早记录…</td></tr>
-{% endif %}

@@ -10,7 +10,7 @@
 - 新数据库没有默认期刊。添加期刊时只需填写名称和官网，程序会验证公开 HTTPS、发现官方端点并预览原创物理研究论文。
 - 查看 Abstract、打开全文、收藏和“不感兴趣”都会形成偏好信号并永久保护该论文；无互动论文至少保留 9 天。
 - 缺少摘要时只检查已明确关联的 arXiv 或出版社元数据，不做模糊标题搜索，也不调用隐藏的替代 API。
-- 设置页使用右下角 Toast，最近同步和 API 用量在独立滚动面板中按时间游标连续加载。
+- 设置页可安全启停 DeepSeek 与 SerpAPI；最近同步和 API 用量只显示近 7 天、每栏最多 100 条。
 - 登录后由系统托盘控制器常驻；桌面快捷方式启动或唤醒应用并打开网页，托盘“结束”会完整关闭调度器和服务。
 
 ## 安装
@@ -23,14 +23,9 @@ Copy-Item .env.example .env
 powershell.exe -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1
 ```
 
-可选外部服务配置：
+可选外部服务在本机设置页中开启：输入 DeepSeek API key 后启用偏好画像与模型精排；未开启时使用本地 BM25。输入 SerpAPI API key 后启用 Google Scholar 重点作者同步；未开启时该来源不会运行。
 
-```dotenv
-SERPAPI_API_KEY=
-DEEPSEEK_API_KEY=
-```
-
-API key 只保存在未跟踪的 `.env` 中，设置页不会显示或保存密钥。
+API key 通过 Python `keyring` 保存到当前 Windows 用户的凭据管理器，不写入 SQLite、页面、日志或 Git，也不会从设置页回显。旧版 `.env` 密钥仍可读取；在设置页保存一次后由凭据管理器与开关优先接管，但应用不会自动改写旧 `.env` 文件。
 
 ## 使用与诊断
 

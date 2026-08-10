@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .external_services import ExternalServiceState, load_external_service
+
 
 class Settings(BaseSettings):
     """Configuration for the private, loopback-only desktop application."""
@@ -54,5 +56,20 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
+    services = get_external_service_states(settings)
+    settings.serpapi_api_key = services["serpapi"].effective_api_key
+    settings.deepseek_api_key = services["deepseek"].effective_api_key
     settings.ensure_local_directories()
     return settings
+
+
+def get_external_service_states(
+    settings: Settings | None = None,
+) -> dict[str, ExternalServiceState]:
+    """Resolve secure UI/runtime service state without exposing keys to templates."""
+
+    environment = settings or Settings()
+    return {
+        "serpapi": load_external_service("serpapi", environment.serpapi_api_key),
+        "deepseek": load_external_service("deepseek", environment.deepseek_api_key),
+    }

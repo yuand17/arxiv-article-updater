@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .arxiv_schedule import next_arxiv_update_at
+from .config import get_settings
 from .datetime_utils import as_utc
 from .db import SessionLocal
 from .models import SourceSchedule, SyncStatus, utcnow
@@ -32,19 +33,27 @@ def _aware(value: datetime | None) -> datetime | None:
 def ensure_source_schedules(db: Session, *, now: datetime | None = None) -> None:
     now = as_utc(now or utcnow())
     assert now is not None
-    created = False
+    changed = False
+    scholar_available = bool(get_settings().serpapi_api_key)
     for source, interval_days in DEFAULT_SOURCE_INTERVALS.items():
-        if db.get(SourceSchedule, source) is None:
+        schedule = db.get(SourceSchedule, source)
+        if schedule is None:
             db.add(
                 SourceSchedule(
                     source=source,
-                    enabled=True,
+                    enabled=scholar_available if source == "scholar" else True,
                     interval_days=interval_days,
-                    next_due_at=now,
+                    next_due_at=now if source != "scholar" or scholar_available else None,
                 )
             )
-            created = True
-    if created:
+            changed = True
+        elif source == "scholar" and not scholar_available and schedule.enabled:
+            schedule.enabled = False
+            schedule.next_due_at = None
+            schedule.last_error = ""
+            schedule.updated_at = now
+            changed = True
+    if changed:
         db.commit()
 
 
@@ -103,6 +112,12 @@ def run_source_update(
         )[0]
         succeeded = run.status == SyncStatus.SUCCESS
         current = db.get(SourceSchedule, source) or schedule
+        if run.status == SyncStatus.SKIPPED:
+            current.enabled = False
+            current.next_due_at = None
+            current.last_error = ""
+            db.commit()
+            return False
         _set_next_due(current, now=utcnow(), succeeded=succeeded, error=run.error or "")
         if not succeeded:
             current.last_error = run.error or "同步失败"

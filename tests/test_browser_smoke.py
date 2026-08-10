@@ -100,6 +100,16 @@ def test_local_feed_actions_and_mobile_layout():
             toast = page.locator(".toast", has_text="更新已启动")
             playwright.expect(title).to_be_visible()
             playwright.expect(toast).to_be_visible()
+            deepseek_toggle = page.locator('[aria-label="启用 DeepSeek"]')
+            deepseek_fields = page.locator("#deepseek-key-fields")
+            deepseek_track = page.locator("#service-deepseek .ios-switch-track")
+            playwright.expect(deepseek_fields).to_be_hidden()
+            deepseek_track.click()
+            playwright.expect(deepseek_toggle).to_be_checked()
+            playwright.expect(deepseek_fields).to_be_visible()
+            playwright.expect(deepseek_track).to_have_css(
+                "background-color", "rgb(52, 199, 89)"
+            )
             title_box = title.bounding_box()
             assert title_box is not None and title_box["height"] < 100
             toast_box = toast.bounding_box()
