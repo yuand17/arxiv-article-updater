@@ -27,6 +27,15 @@ def _clean_html(value: str) -> str:
     return " ".join(BeautifulSoup(value or "", "html.parser").get_text(" ").split())
 
 
+def clean_crossref_abstract(value: str) -> str:
+    soup = BeautifulSoup(value or "", "html.parser")
+    for node in soup.find_all(
+        lambda tag: bool(tag.name) and tag.name.casefold().rsplit(":", 1)[-1] == "title"
+    ):
+        node.decompose()
+    return " ".join(soup.get_text(" ").split())
+
+
 def _entry_date(entry: dict) -> datetime | None:
     for key in ("published", "updated", "dc_date"):
         value = entry.get(key)
@@ -101,13 +110,14 @@ def parse_journal_feed(content: str, journal: JournalFeed) -> list[PaperCandidat
         if not authors and entry.get("author"):
             authors = [part.strip() for part in str(entry["author"]).split(",")]
         external_id = doi or str(entry.get("id") or link or title)
+        abstract = _clean_html(str(entry.get("summary") or entry.get("description") or ""))
         candidates.append(
             PaperCandidate(
                 source="journal",
                 external_id=external_id,
                 title=title,
                 authors=[name for name in authors if name],
-                abstract=_clean_html(str(entry.get("summary") or entry.get("description") or "")),
+                abstract=abstract,
                 published_at=_entry_date(entry),
                 doi=doi,
                 canonical_url=link or (f"https://doi.org/{doi}" if doi else None),
@@ -116,6 +126,7 @@ def parse_journal_feed(content: str, journal: JournalFeed) -> list[PaperCandidat
                     "issn": journal.issn,
                     "document_type": _entry_document_type(entry),
                     "subjects": _entry_subjects(entry),
+                    "abstract_source_kind": "feed-summary" if abstract else "",
                 },
             )
         )
@@ -159,13 +170,14 @@ def parse_crossref_works(payload: dict[str, Any], journal: JournalFeed) -> list[
         resource_url = str(
             ((item.get("resource") or {}).get("primary") or {}).get("URL") or ""
         ).strip()
+        abstract = clean_crossref_abstract(str(item.get("abstract") or ""))
         candidates.append(
             PaperCandidate(
                 source="journal",
                 external_id=doi,
                 title=title,
                 authors=authors,
-                abstract=_clean_html(str(item.get("abstract") or "")),
+                abstract=abstract,
                 published_at=published_at,
                 doi=doi,
                 canonical_url=resource_url or f"https://doi.org/{doi}",
@@ -175,6 +187,7 @@ def parse_crossref_works(payload: dict[str, Any], journal: JournalFeed) -> list[
                     "document_type": str(item.get("subtype") or item.get("type") or ""),
                     "subjects": item.get("subject") or [],
                     "crossref_type": item.get("type"),
+                    "abstract_source_kind": "crossref" if abstract else "",
                 },
             )
         )
@@ -280,6 +293,9 @@ def _merge_candidate(primary: PaperCandidate, supplement: PaperCandidate) -> Non
 
     if supplement.abstract:
         primary.abstract = supplement.abstract
+        primary.metadata["abstract_source_kind"] = supplement.metadata.get(
+            "abstract_source_kind", "crossref"
+        )
     if not primary.authors and supplement.authors:
         primary.authors = supplement.authors
     if primary.published_at is None:

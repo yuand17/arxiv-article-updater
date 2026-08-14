@@ -45,6 +45,28 @@ class UpsertResult:
     created: bool
 
 
+def _candidate_abstract_source(candidate: PaperCandidate) -> str:
+    if (
+        candidate.source == "journal"
+        and candidate.metadata.get("abstract_source_kind") == "crossref"
+    ):
+        return "crossref"
+    return candidate.source
+
+
+def _candidate_has_better_abstract(candidate: PaperCandidate, paper: Paper) -> bool:
+    abstract = candidate.abstract.strip()
+    if not abstract:
+        return False
+    if not paper.abstract.strip():
+        return True
+    return (
+        candidate.source == "journal"
+        and candidate.metadata.get("abstract_source_kind") == "crossref"
+        and paper.abstract_source in {"", "journal"}
+    )
+
+
 def find_existing_paper(db: Session, candidate: PaperCandidate) -> Paper | None:
     if candidate.arxiv_id:
         paper = db.scalar(select(Paper).where(Paper.arxiv_id == candidate.arxiv_id))
@@ -87,7 +109,7 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
             title=candidate.title.strip(),
             normalized_title=normalize_title(candidate.title),
             abstract=abstract,
-            abstract_source=candidate.source if abstract else "",
+            abstract_source=_candidate_abstract_source(candidate) if abstract else "",
             abstract_status="available" if abstract else "missing",
             abstract_checked_at=utcnow() if abstract else None,
             authors_text=authors_text,
@@ -111,9 +133,9 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
         elif authors_text and not paper.authors_text.strip():
             paper.authors_text = authors_text
             paper.first_author = candidate_authors[0].lower()
-        if candidate.abstract and not paper.abstract:
+        if _candidate_has_better_abstract(candidate, paper):
             paper.abstract = candidate.abstract.strip()
-            paper.abstract_source = candidate.source
+            paper.abstract_source = _candidate_abstract_source(candidate)
             paper.abstract_status = "available"
             paper.abstract_checked_at = utcnow()
         if candidate.arxiv_id and not paper.arxiv_id:

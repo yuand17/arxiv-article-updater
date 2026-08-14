@@ -404,7 +404,10 @@ def test_official_rss_is_enriched_by_crossref_without_importing_crossref_only_it
                                 "DOI": "10.1126/science.test1",
                                 "published-online": {"date-parts": [[2026, 8, 9]]},
                                 "type": "journal-article",
-                                "abstract": "<jats:p>Quantum spin collision abstract.</jats:p>",
+                                "abstract": (
+                                    "<jats:title>Abstract</jats:title>"
+                                    "<jats:p>Quantum spin collision abstract.</jats:p>"
+                                ),
                                 "author": [{"given": "Ada", "family": "Lovelace"}],
                             },
                             {
@@ -436,6 +439,7 @@ def test_official_rss_is_enriched_by_crossref_without_importing_crossref_only_it
     assert len(candidates) == 1
     assert candidates[0].external_id == "10.1126/science.test1"
     assert candidates[0].abstract == "Quantum spin collision abstract."
+    assert candidates[0].metadata["abstract_source_kind"] == "crossref"
     assert candidates[0].authors == ["Ada Lovelace"]
     assert candidates[0].metadata["document_type"] == "Research Article"
 

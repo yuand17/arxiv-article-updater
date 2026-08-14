@@ -1,4 +1,18 @@
 (() => {
+  function renderMath(root = document) {
+    if (typeof window.renderMathInElement !== "function") return;
+    root.querySelectorAll("[data-math]").forEach((node) => {
+      window.renderMathInElement(node, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false },
+        ],
+        strict: "ignore",
+        throwOnError: false,
+      });
+    });
+  }
+
   const messages = {
     settings_saved: ["success", "设置已保存", "新的篇数从下一次三天精选生效。"],
     profile_started: ["info", "画像重建已启动", "完成后会用于后续推荐。"],
@@ -51,6 +65,7 @@
     if (form && !window.confirm(form.dataset.confirmMessage)) event.preventDefault();
   });
   document.addEventListener("app:toast", (event) => showToast(event.detail || {}));
+  document.addEventListener("htmx:afterSwap", (event) => renderMath(event.detail.target));
   document.addEventListener("app:sync-started", async (event) => {
     const { source, after } = event.detail || {};
     if (!source || !after) return;
@@ -89,6 +104,7 @@
     });
   });
   document.addEventListener("DOMContentLoaded", () => {
+    renderMath();
     document.querySelectorAll("[data-service-toggle]").forEach(updateServiceKeyFields);
     const key = new URLSearchParams(window.location.search).get("toast");
     if (key && messages[key]) {

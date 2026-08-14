@@ -11,7 +11,7 @@
       {% if item.paper.scites_count %}<span class="scirate-score">▲ {{ item.paper.scites_count }}</span>{% endif %}
       <time>入库 {{ item.paper.discovered_at.strftime('%Y-%m-%d') }}</time>
     </div>
-    <h2>{{ item.paper.title }}</h2>
+    <h2 data-math>{{ item.paper.title }}</h2>
     <p class="authors">{{ item.paper.authors_text or 'Authors unavailable' }}</p>
     <div id="detail-{{ item.paper.id }}" class="paper-detail"></div>
     <div class="paper-actions">

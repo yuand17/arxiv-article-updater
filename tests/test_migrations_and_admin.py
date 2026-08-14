@@ -89,7 +89,7 @@ def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_
                 connection.exec_driver_sql(
                     "SELECT COUNT(*) FROM journal_endpoints"
                 ).scalar_one()
-                == 12
+                == 16
             )
             assert connection.exec_driver_sql(
                 "SELECT group_concat(name, '|') FROM "
@@ -124,6 +124,41 @@ def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_
         with engine.connect() as connection:
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM papers").scalar_one() == 1
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM interactions").scalar_one() == 2
+    finally:
+        get_settings.cache_clear()
+
+
+def test_crossref_endpoint_migration_reuses_legacy_subscription_id(tmp_path, monkeypatch):
+    database_path = tmp_path / "legacy-journal-migration.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    legacy_id = "legacy-nature-physics-id"
+    try:
+        command.upgrade(config, "0005")
+        with sqlite3.connect(database_path) as conn:
+            conn.execute(
+                "INSERT INTO journal_subscriptions "
+                "(id, name, homepage_url, canonical_domain, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    legacy_id,
+                    "Nature Physics",
+                    "https://legacy.example/nphys",
+                    "legacy.example",
+                    "2026-01-01",
+                ),
+            )
+            conn.commit()
+
+        command.upgrade(config, "head")
+
+        with sqlite3.connect(database_path) as conn:
+            endpoint_owner = conn.execute(
+                "SELECT journal_subscription_id FROM journal_endpoints WHERE url = ?",
+                ("https://api.crossref.org/journals/1745-2481/works",),
+            ).fetchone()
+            assert endpoint_owner == (legacy_id,)
     finally:
         get_settings.cache_clear()
 
@@ -201,6 +236,10 @@ def test_local_settings_seeds_fixed_journals_and_toggles_each_independently(app_
         feeds = list(db.scalars(select(models.JournalSubscription)))
         assert len(feeds) == 8
         assert all(feed.is_active for feed in feeds)
+        assert all(
+            {endpoint.kind for endpoint in feed.endpoints} == {"rss", "crossref"}
+            for feed in feeds
+        )
         science = next(feed for feed in feeds if feed.name == "Science")
         science_id = science.id
 

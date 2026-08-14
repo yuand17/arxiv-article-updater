@@ -36,7 +36,7 @@ from .models import (
     utcnow,
 )
 from .scheduler import DEFAULT_SOURCE_INTERVALS, ensure_source_schedules
-from .services.abstracts import enrich_paper_abstract_in_background
+from .services.abstracts import abstract_needs_enrichment, enrich_paper_abstract_in_background
 from .services.interactions import record_interaction, remove_interaction
 from .services.journal_catalog import ensure_builtin_journals
 from .services.preferences import (
@@ -315,7 +315,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         if paper is None:
             return HTMLResponse("论文不存在", status_code=404)
         record_interaction(db, paper.id, InteractionKind.ABSTRACT_VIEWED)
-        if not paper.abstract.strip():
+        if abstract_needs_enrichment(paper):
             background_tasks.add_task(enrich_paper_abstract_in_background, paper.id)
         return templates.TemplateResponse(request, "partials/abstract_panel.html", {"paper": paper})
 

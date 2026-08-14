@@ -1,7 +1,7 @@
 <div class="abstract-panel">
   <div class="abstract-heading"><span>AB</span><strong>Abstract</strong>{% if paper.abstract_source %}<small>来源：{{ paper.abstract_source }}</small>{% endif %}</div>
   {% if paper.abstract %}
-    <p>{{ paper.abstract }}</p>
+    <p data-math>{{ paper.abstract }}</p>
   {% else %}
     <p class="muted">暂无摘要。程序只会检查已明确关联的 arXiv 或出版社元数据，不会模糊搜索或编造内容。</p>
   {% endif %}

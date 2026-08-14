@@ -31,9 +31,9 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
     db_module.Base.metadata.create_all(bind=db_module.engine)
     with db_module.SessionLocal() as db:
         paper = models.Paper(
-            title="Browser-tested quantum paper",
-            normalized_title="browser-tested quantum paper",
-            abstract="We present a browser-tested method for quantum information.",
+            title="Browser-tested quantum paper $q_{2}$",
+            normalized_title="browser-tested quantum paper q 2",
+            abstract="We present a browser-tested $q_{2}$ method for quantum information.",
             abstract_source="arxiv",
             abstract_status="available",
             authors_text="Alice Example",
@@ -91,10 +91,12 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
             playwright.expect(
                 page.locator("h2", has_text="Browser-tested quantum paper")
             ).to_be_visible()
+            playwright.expect(page.locator("h2 .katex")).to_be_visible()
             page.locator(".interest-button").click()
             playwright.expect(page.locator(".abstract-panel")).to_contain_text(
-                "browser-tested method"
+                "quantum information"
             )
+            playwright.expect(page.locator(".abstract-panel .katex")).to_be_visible()
             page.locator("button[hx-post$='/save']").click()
             playwright.expect(page.locator("button[hx-post$='/save']")).to_have_class(
                 re.compile(r"\bis-saved\b")

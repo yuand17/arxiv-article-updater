@@ -79,6 +79,65 @@ def test_upsert_repairs_malformed_author_separators(app_client):
         assert second.paper.authors_text == "Alice Example, Bob Example"
 
 
+def test_upsert_replaces_journal_feed_summary_with_crossref_abstract(app_client):
+    _, session_factory, _ = app_client
+    feed_candidate = PaperCandidate(
+        source="journal",
+        external_id="10.1103/example",
+        title="A journal result",
+        authors=["Alice Example"],
+        abstract="Author(s): Alice Example A truncated result… [Journal 1, 1] Published today",
+        doi="10.1103/example",
+        metadata={"abstract_source_kind": "feed-summary"},
+    )
+    crossref_candidate = replace(
+        feed_candidate,
+        abstract="The complete publisher-deposited abstract.",
+        metadata={"abstract_source_kind": "crossref"},
+    )
+
+    with session_factory() as db:
+        first = upsert_paper(db, feed_candidate)
+        second = upsert_paper(db, crossref_candidate)
+        db.commit()
+
+        assert first.created is True
+        assert second.created is False
+        assert second.paper.abstract == "The complete publisher-deposited abstract."
+        assert second.paper.abstract_source == "crossref"
+
+
+def test_crossref_does_not_replace_an_existing_arxiv_abstract(app_client):
+    _, session_factory, _ = app_client
+    arxiv_candidate = PaperCandidate(
+        source="arxiv",
+        external_id="2608.00001",
+        arxiv_id="2608.00001",
+        title="A shared result",
+        authors=["Alice Example"],
+        abstract="The complete arXiv abstract.",
+        doi="10.1103/example",
+    )
+    crossref_candidate = PaperCandidate(
+        source="journal",
+        external_id="10.1103/example",
+        title="A shared result",
+        authors=["Alice Example"],
+        abstract="The publisher abstract.",
+        doi="10.1103/example",
+        metadata={"abstract_source_kind": "crossref"},
+    )
+
+    with session_factory() as db:
+        upsert_paper(db, arxiv_candidate)
+        result = upsert_paper(db, crossref_candidate)
+        db.commit()
+
+        assert result.created is False
+        assert result.paper.abstract == "The complete arXiv abstract."
+        assert result.paper.abstract_source == "arxiv"
+
+
 def test_scholar_upsert_deduplicates_the_same_paper_across_tracked_authors(app_client):
     _, session_factory, models = app_client
     first = PaperCandidate(

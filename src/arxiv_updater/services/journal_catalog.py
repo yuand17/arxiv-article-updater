@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..models import JournalEndpoint, JournalSubscription, utcnow
 
-CATALOG_VERSION = "builtin-journals-v1"
+CATALOG_VERSION = "builtin-journals-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +60,11 @@ BUILTIN_JOURNALS: tuple[BuiltinJournal, ...] = (
         scope_kind="physics",
         endpoints=(
             BuiltinJournalEndpoint("rss", "https://www.nature.com/nphys.rss", 10),
+            BuiltinJournalEndpoint(
+                "crossref",
+                "https://api.crossref.org/journals/1745-2481/works",
+                20,
+            ),
         ),
     ),
     BuiltinJournal(
@@ -135,6 +140,11 @@ BUILTIN_JOURNALS: tuple[BuiltinJournal, ...] = (
         scope_kind="physics",
         endpoints=(
             BuiltinJournalEndpoint("rss", "https://feeds.aps.org/rss/recent/prl.xml", 10),
+            BuiltinJournalEndpoint(
+                "crossref",
+                "https://api.crossref.org/journals/1079-7114/works",
+                20,
+            ),
         ),
     ),
     BuiltinJournal(
@@ -148,6 +158,11 @@ BUILTIN_JOURNALS: tuple[BuiltinJournal, ...] = (
         scope_kind="physics",
         endpoints=(
             BuiltinJournalEndpoint("rss", "https://feeds.aps.org/rss/recent/prx.xml", 10),
+            BuiltinJournalEndpoint(
+                "crossref",
+                "https://api.crossref.org/journals/2160-3308/works",
+                20,
+            ),
         ),
     ),
     BuiltinJournal(
@@ -162,6 +177,11 @@ BUILTIN_JOURNALS: tuple[BuiltinJournal, ...] = (
         endpoints=(
             BuiltinJournalEndpoint(
                 "rss", "https://feeds.aps.org/rss/recent/prxquantum.xml", 10
+            ),
+            BuiltinJournalEndpoint(
+                "crossref",
+                "https://api.crossref.org/journals/2691-3399/works",
+                20,
             ),
         ),
     ),
