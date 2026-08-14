@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -10,6 +11,26 @@ from .base import PaperCandidate, SourceAdapter
 
 AUTHOR_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,32}$")
 RECENT_ARTICLE_LIMIT = 10
+
+
+@dataclass(frozen=True, slots=True)
+class SerpApiAccountUsage:
+    searches_per_month: int
+    this_month_usage: int
+    total_searches_left: int
+
+
+def _nonnegative_account_value(payload: dict, field: str) -> int:
+    value = payload.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise RuntimeError("SerpAPI 账户额度响应无效")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("SerpAPI 账户额度响应无效") from exc
+    if parsed < 0:
+        raise RuntimeError("SerpAPI 账户额度响应无效")
+    return parsed
 
 
 def parse_scholar_author_id(value: str) -> str:
@@ -96,6 +117,35 @@ class ScholarAdapter(SourceAdapter):
         self.client = client or httpx.Client(timeout=30, follow_redirects=True)
         self.author_names: dict[str, str] = {}
         self.author_citation_counts: dict[str, int] = {}
+        self.account_usage_before: SerpApiAccountUsage | None = None
+
+    def fetch_account_usage(self) -> SerpApiAccountUsage:
+        """Read the provider's authoritative quota counters without spending a search."""
+
+        if not self.settings.serpapi_api_key:
+            raise RuntimeError("SERPAPI_API_KEY is not configured")
+        try:
+            response = self.client.get(
+                "https://serpapi.com/account.json",
+                params={"api_key": self.settings.serpapi_api_key},
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError("无法读取 SerpAPI 账户额度") from exc
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"SerpAPI 账户接口返回 HTTP {response.status_code}") from exc
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("SerpAPI 账户额度响应无效") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("SerpAPI 账户额度响应无效")
+        return SerpApiAccountUsage(
+            searches_per_month=_nonnegative_account_value(payload, "searches_per_month"),
+            this_month_usage=_nonnegative_account_value(payload, "this_month_usage"),
+            total_searches_left=_nonnegative_account_value(payload, "total_searches_left"),
+        )
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         if not self.settings.serpapi_api_key:

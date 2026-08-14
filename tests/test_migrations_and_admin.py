@@ -257,6 +257,81 @@ def test_manual_scirate_sync_enables_human_chrome_assistance(app_client, monkeyp
     assert "app.js" in page.text
 
 
+def test_one_click_update_starts_all_four_sources(app_client, monkeypatch):
+    client, _, _ = app_client
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "arxiv_updater.scheduler.run_all_source_updates_in_background",
+        lambda: calls.append("all"),
+    )
+
+    page = client.get("/settings")
+    assert "一键更新四个来源" in page.text
+
+    response = client.post("/settings/sync/all", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/settings?sync_started=all&toast=sync_started"
+    assert calls == ["all"]
+
+
+def test_all_source_status_uses_aggregate_run(app_client):
+    client, session_factory, models = app_client
+    after = datetime.now(UTC) - timedelta(seconds=1)
+    with session_factory() as db:
+        db.add(
+            models.SyncRun(
+                source="all",
+                status=models.SyncStatus.SUCCESS,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+                items_seen=42,
+                items_created=7,
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        "/settings/sync/all/status",
+        params={"after": after.replace(tzinfo=None).isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "message": "",
+        "items_seen": 42,
+        "items_created": 7,
+    }
+
+
+def test_settings_hides_legacy_serpapi_usage_estimates(app_client):
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.ApiUsage(
+                    service="serpapi",
+                    operation="author_sync",
+                    request_count=224,
+                ),
+                models.ApiUsage(
+                    service="serpapi",
+                    operation="author_sync_billed",
+                    request_count=2,
+                ),
+            ]
+        )
+        db.commit()
+
+    page = client.get("/settings")
+
+    assert page.status_code == 200
+    assert "<strong>serpapi</strong> 2 requests" in page.text
+    assert "<td>author_sync</td>" not in page.text
+    assert "<td>author_sync_billed</td>" in page.text
+
+
 def test_htmx_manual_sync_exposes_completion_poll_and_failed_status(app_client, monkeypatch):
     client, session_factory, models = app_client
     monkeypatch.setattr(

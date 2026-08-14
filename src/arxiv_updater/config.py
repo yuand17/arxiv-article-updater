@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,7 +17,6 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Shanghai"
 
     serpapi_api_key: str = ""
-    serpapi_monthly_query_budget: int = 240
     deepseek_api_key: str = ""
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
@@ -41,6 +41,14 @@ class Settings(BaseSettings):
         ]
     )
 
+    def __init__(self, **values: Any) -> None:
+        # API keys are accepted only as explicit runtime/test values.  Supplying
+        # empty init values keeps OS environment variables and .env out of the
+        # credential path; production keys are injected from Credential Manager.
+        values.setdefault("serpapi_api_key", "")
+        values.setdefault("deepseek_api_key", "")
+        super().__init__(**values)
+
     @model_validator(mode="after")
     def require_local_sqlite(self) -> "Settings":
         if not self.database_url.startswith("sqlite"):
@@ -56,20 +64,17 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    services = get_external_service_states(settings)
+    services = get_external_service_states()
     settings.serpapi_api_key = services["serpapi"].effective_api_key
     settings.deepseek_api_key = services["deepseek"].effective_api_key
     settings.ensure_local_directories()
     return settings
 
 
-def get_external_service_states(
-    settings: Settings | None = None,
-) -> dict[str, ExternalServiceState]:
+def get_external_service_states() -> dict[str, ExternalServiceState]:
     """Resolve secure UI/runtime service state without exposing keys to templates."""
 
-    environment = settings or Settings()
     return {
-        "serpapi": load_external_service("serpapi", environment.serpapi_api_key),
-        "deepseek": load_external_service("deepseek", environment.deepseek_api_key),
+        "serpapi": load_external_service("serpapi"),
+        "deepseek": load_external_service("deepseek"),
     }

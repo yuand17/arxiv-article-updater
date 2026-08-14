@@ -3,12 +3,13 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from arxiv_updater import scheduler as scheduler_module
 from arxiv_updater.arxiv_schedule import next_arxiv_update_at
 from arxiv_updater.config import Settings
 from arxiv_updater.scheduler import _set_next_due, ensure_source_schedules, run_source_update
 from arxiv_updater.services import sync as sync_module
 from arxiv_updater.sources.base import PaperCandidate
-from arxiv_updater.sources.scholar import ScholarAdapter
+from arxiv_updater.sources.scholar import ScholarAdapter, SerpApiAccountUsage
 from arxiv_updater.sources.scirate import SciRateAdapter, SciRateRecord
 
 
@@ -54,8 +55,15 @@ def test_journal_schedule_defaults_to_daily(app_client):
         assert schedule.interval_days == 1
 
 
-def test_scholar_sync_fails_before_partial_update_when_budget_is_insufficient(app_client):
+def test_scholar_sync_fails_before_partial_update_when_live_quota_is_insufficient(
+    app_client, monkeypatch
+):
     _, session_factory, models = app_client
+    monkeypatch.setattr(
+        ScholarAdapter,
+        "fetch_account_usage",
+        lambda self: SerpApiAccountUsage(250, 249, 1),
+    )
     with session_factory() as db:
         db.add_all(
             [
@@ -67,16 +75,44 @@ def test_scholar_sync_fails_before_partial_update_when_budget_is_insufficient(ap
                 for index in range(2)
             ]
         )
+        db.commit()
+        with pytest.raises(RuntimeError, match="月度额度不足"):
+            sync_module._build_adapter(db, "scholar")
+
+
+def test_scholar_sync_uses_live_quota_instead_of_inflated_legacy_usage(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+    monkeypatch.setattr(
+        ScholarAdapter,
+        "fetch_account_usage",
+        lambda self: SerpApiAccountUsage(250, 46, 204),
+    )
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.TrackedAuthor(
+                    scholar_author_id=f"author{index:04d}",
+                    name=f"Author {index}",
+                    profile_url=f"https://scholar.google.com/citations?user=author{index:04d}",
+                )
+                for index in range(21)
+            ]
+        )
         db.add(
             models.ApiUsage(
                 service="serpapi",
                 operation="author_sync",
-                request_count=239,
+                request_count=224,
             )
         )
         db.commit()
-        with pytest.raises(RuntimeError, match="insufficient"):
-            sync_module._build_adapter(db, "scholar")
+
+        adapter = sync_module._build_adapter(db, "scholar")
+
+        assert isinstance(adapter, ScholarAdapter)
+        assert adapter.account_usage_before == SerpApiAccountUsage(250, 46, 204)
 
 
 def test_scholar_sync_is_skipped_without_an_enabled_serpapi_key(app_client, monkeypatch):
@@ -131,6 +167,51 @@ def test_source_update_only_enables_browser_challenge_when_explicit(
         assert run_source_update(db, "scirate")
 
     assert observed == [True, False]
+
+
+def test_one_click_update_runs_all_sources_and_records_aggregate(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+    calls: list[tuple[str, bool]] = []
+
+    def fake_source_update(db, source, *, now=None, allow_browser_challenge=False):
+        calls.append((source, allow_browser_challenge))
+        status = models.SyncStatus.SKIPPED if source == "scholar" else models.SyncStatus.SUCCESS
+        run = models.SyncRun(
+            source=source,
+            status=status,
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+            items_seen=10,
+            items_created=1,
+            error="SerpAPI 未启用" if source == "scholar" else "",
+        )
+        db.add(run)
+        db.commit()
+        return status == models.SyncStatus.SUCCESS
+
+    monkeypatch.setattr(scheduler_module, "SessionLocal", session_factory)
+    monkeypatch.setattr(scheduler_module, "run_source_update", fake_source_update)
+
+    scheduler_module.run_all_source_updates_in_background()
+
+    assert calls == [
+        ("arxiv", False),
+        ("scirate", True),
+        ("scholar", False),
+        ("journals", False),
+    ]
+    with session_factory() as db:
+        aggregate = db.scalar(
+            select(models.SyncRun)
+            .where(models.SyncRun.source == "all")
+            .order_by(models.SyncRun.started_at.desc())
+        )
+        assert aggregate is not None
+        assert aggregate.status == models.SyncStatus.SUCCESS
+        assert (aggregate.items_seen, aggregate.items_created) == (40, 4)
+        assert aggregate.error == "已跳过未启用的来源：scholar"
 
 
 def test_sync_normalizes_legacy_naive_sqlite_run_timestamp(app_client, monkeypatch):

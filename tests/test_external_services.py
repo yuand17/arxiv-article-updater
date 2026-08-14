@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from arxiv_updater.config import Settings
 from arxiv_updater.external_services import (
     CREDENTIAL_SERVICE_NAME,
     CredentialValidationError,
@@ -30,16 +31,25 @@ class FakeCredentialBackend:
         self.passwords[(service_name, username)] = password
 
 
-def test_environment_key_is_a_backward_compatible_default():
+def test_unmanaged_service_starts_empty():
     backend = FakeCredentialBackend()
 
-    state = load_external_service("deepseek", "legacy-key", backend=backend)
+    state = load_external_service("deepseek", backend=backend)
 
-    assert state.enabled is True
-    assert state.effective_api_key == "legacy-key"
-    assert state.source == "environment"
-    assert "legacy-key" not in repr(state)
+    assert state.enabled is False
+    assert state.effective_api_key == ""
+    assert state.source == "none"
     assert not hasattr(public_service_view(state), "api_key")
+
+
+def test_environment_api_keys_are_ignored(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "legacy-deepseek-key")
+    monkeypatch.setenv("SERPAPI_API_KEY", "legacy-serpapi-key")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.deepseek_api_key == ""
+    assert settings.serpapi_api_key == ""
 
 
 def test_switch_state_and_key_are_saved_without_echoing_the_key():
@@ -65,7 +75,7 @@ def test_switch_state_and_key_are_saved_without_echoing_the_key():
     assert payload["api_key"] == "new-secret-key"
 
 
-def test_clear_writes_a_tombstone_that_masks_a_legacy_environment_key():
+def test_clear_removes_the_managed_key():
     backend = FakeCredentialBackend()
     save_external_service(
         "serpapi",
@@ -75,7 +85,7 @@ def test_clear_writes_a_tombstone_that_masks_a_legacy_environment_key():
     )
 
     clear_external_service("serpapi", backend=backend)
-    state = load_external_service("serpapi", "legacy-key", backend=backend)
+    state = load_external_service("serpapi", backend=backend)
 
     assert state.source == "credential_manager"
     assert state.has_api_key is False
@@ -92,13 +102,14 @@ def test_enabling_without_any_key_is_rejected():
         )
 
 
-def test_read_failure_keeps_legacy_configuration_but_blocks_settings_writes():
+def test_read_failure_disables_the_service_and_blocks_settings_writes():
     backend = FakeCredentialBackend()
     backend.fail_reads = True
 
-    state = load_external_service("deepseek", "legacy-key", backend=backend)
+    state = load_external_service("deepseek", backend=backend)
 
-    assert state.enabled is True
+    assert state.enabled is False
+    assert state.has_api_key is False
     assert state.storage_available is False
 
 

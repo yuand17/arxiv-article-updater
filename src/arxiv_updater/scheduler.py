@@ -12,7 +12,7 @@ from .arxiv_schedule import next_arxiv_update_at
 from .config import get_settings
 from .datetime_utils import as_utc
 from .db import SessionLocal
-from .models import SourceSchedule, SyncStatus, utcnow
+from .models import SourceSchedule, SyncRun, SyncStatus, utcnow
 
 DEFAULT_SOURCE_INTERVALS = {
     "arxiv": 1,
@@ -174,6 +174,68 @@ def run_source_update_in_background(
             source,
             allow_browser_challenge=allow_browser_challenge,
         )
+
+
+def run_all_source_updates_in_background() -> None:
+    """Run all four manual source updates in order and record one aggregate result."""
+
+    with SessionLocal() as db:
+        aggregate = SyncRun(source="all", status=SyncStatus.RUNNING)
+        db.add(aggregate)
+        db.commit()
+        aggregate_id = aggregate.id
+
+    total_seen = 0
+    total_created = 0
+    failed_sources: list[str] = []
+    skipped_sources: list[str] = []
+    for source in DEFAULT_SOURCE_INTERVALS:
+        source_started_at = utcnow().replace(tzinfo=None)
+        try:
+            with SessionLocal() as db:
+                run_source_update(
+                    db,
+                    source,
+                    allow_browser_challenge=source == "scirate",
+                )
+                run = db.scalar(
+                    select(SyncRun)
+                    .where(
+                        SyncRun.source == source,
+                        SyncRun.started_at >= source_started_at,
+                    )
+                    .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+                )
+                if run is None:
+                    failed_sources.append(f"{source}（已有更新正在运行）")
+                    continue
+                total_seen += run.items_seen
+                total_created += run.items_created
+                if run.status == SyncStatus.SKIPPED:
+                    skipped_sources.append(source)
+                elif run.status != SyncStatus.SUCCESS:
+                    failed_sources.append(f"{source}（{run.error or '同步失败'}）")
+        except Exception as exc:
+            failed_sources.append(f"{source}（{type(exc).__name__}）")
+
+    with SessionLocal() as db:
+        current_aggregate = db.get(SyncRun, aggregate_id)
+        if current_aggregate is None:
+            return
+        current_aggregate.items_seen = total_seen
+        current_aggregate.items_created = total_created
+        current_aggregate.finished_at = utcnow()
+        if failed_sources:
+            current_aggregate.status = SyncStatus.FAILED
+            current_aggregate.error = "部分来源更新失败：" + "；".join(failed_sources)
+        else:
+            current_aggregate.status = SyncStatus.SUCCESS
+            current_aggregate.error = (
+                "已跳过未启用的来源：" + "、".join(skipped_sources)
+                if skipped_sources
+                else ""
+            )
+        db.commit()
 
 
 def configure_scheduler(scheduler: BaseScheduler) -> None:

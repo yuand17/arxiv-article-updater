@@ -19,7 +19,7 @@ def _load_keyring_module() -> ModuleType | None:
 _keyring = _load_keyring_module()
 
 ServiceName = Literal["deepseek", "serpapi"]
-CredentialSource = Literal["credential_manager", "environment", "none"]
+CredentialSource = Literal["credential_manager", "none"]
 
 SUPPORTED_SERVICES: tuple[ServiceName, ...] = ("deepseek", "serpapi")
 CREDENTIAL_SERVICE_NAME = "arXiv Updater optional API services"
@@ -100,22 +100,6 @@ def _normalize_api_key(value: str) -> str:
     return api_key
 
 
-def _environment_state(
-    service: ServiceName,
-    environment_api_key: str,
-    *,
-    storage_available: bool = True,
-) -> ExternalServiceState:
-    api_key = _normalize_api_key(environment_api_key)
-    return ExternalServiceState(
-        service=service,
-        requested_enabled=bool(api_key),
-        api_key=api_key,
-        source="environment" if api_key else "none",
-        storage_available=storage_available,
-    )
-
-
 def _managed_state(service: ServiceName, raw: str) -> ExternalServiceState:
     try:
         payload = json.loads(raw)
@@ -138,23 +122,29 @@ def _managed_state(service: ServiceName, raw: str) -> ExternalServiceState:
 
 def load_external_service(
     service: ServiceName,
-    environment_api_key: str = "",
     *,
     backend: CredentialBackend | None = None,
 ) -> ExternalServiceState:
-    """Resolve one service, preferring an explicit Credential Manager record.
-
-    A managed record with an empty key is an intentional tombstone. It prevents a
-    cleared key from silently reappearing through a legacy ``.env`` value.
-    """
+    """Resolve one service exclusively from the OS credential store."""
 
     try:
         active_backend = backend or _system_backend()
         raw = active_backend.get_password(CREDENTIAL_SERVICE_NAME, service)
     except Exception:
-        return _environment_state(service, environment_api_key, storage_available=False)
+        return ExternalServiceState(
+            service=service,
+            requested_enabled=False,
+            api_key="",
+            source="none",
+            storage_available=False,
+        )
     if raw is None:
-        return _environment_state(service, environment_api_key)
+        return ExternalServiceState(
+            service=service,
+            requested_enabled=False,
+            api_key="",
+            source="none",
+        )
     try:
         return _managed_state(service, raw)
     except CredentialStoreError:
@@ -172,18 +162,13 @@ def save_external_service(
     *,
     enabled: bool,
     new_api_key: str = "",
-    environment_api_key: str = "",
     backend: CredentialBackend | None = None,
 ) -> ExternalServiceState:
     """Persist a switch state and optional replacement key in the OS credential store."""
 
     try:
         active_backend = backend or _system_backend()
-        current = load_external_service(
-            service,
-            environment_api_key,
-            backend=active_backend,
-        )
+        current = load_external_service(service, backend=active_backend)
         replacement = _normalize_api_key(new_api_key)
         api_key = replacement or current.api_key
         if enabled and not api_key:
@@ -211,7 +196,7 @@ def clear_external_service(
     *,
     backend: CredentialBackend | None = None,
 ) -> ExternalServiceState:
-    """Mask legacy environment values and remove the managed secret."""
+    """Disable one service and remove its managed secret."""
 
     try:
         active_backend = backend or _system_backend()

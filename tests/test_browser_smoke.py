@@ -20,8 +20,13 @@ def _available_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def test_local_feed_actions_and_mobile_layout():
+def test_local_feed_actions_and_mobile_layout(monkeypatch):
     playwright = pytest.importorskip("playwright.sync_api")
+    all_source_calls: list[str] = []
+    monkeypatch.setattr(
+        "arxiv_updater.scheduler.run_all_source_updates_in_background",
+        lambda: all_source_calls.append("all"),
+    )
     db_module.Base.metadata.drop_all(bind=db_module.engine)
     db_module.Base.metadata.create_all(bind=db_module.engine)
     with db_module.SessionLocal() as db:
@@ -97,9 +102,18 @@ def test_local_feed_actions_and_mobile_layout():
 
             page.goto(f"http://127.0.0.1:{port}/settings?toast=sync_started")
             title = page.locator(".settings-heading-copy h1")
-            toast = page.locator(".toast", has_text="更新已启动")
+            toast = page.locator(".toast", has_text="更新已启动").first
             playwright.expect(title).to_be_visible()
             playwright.expect(toast).to_be_visible()
+            all_sources_button = page.get_by_role(
+                "button", name="一键更新四个来源", exact=True
+            )
+            playwright.expect(all_sources_button).to_be_visible()
+            all_sources_button.click()
+            page.wait_for_timeout(100)
+            assert all_source_calls == ["all"]
+            latest_toast = page.locator(".toast", has_text="更新已启动").last
+            playwright.expect(latest_toast).to_be_visible()
             deepseek_toggle = page.locator('[aria-label="启用 DeepSeek"]')
             deepseek_fields = page.locator("#deepseek-key-fields")
             deepseek_track = page.locator("#service-deepseek .ios-switch-track")
@@ -112,7 +126,7 @@ def test_local_feed_actions_and_mobile_layout():
             )
             title_box = title.bounding_box()
             assert title_box is not None and title_box["height"] < 100
-            toast_box = toast.bounding_box()
+            toast_box = latest_toast.bounding_box()
             assert toast_box is not None
             assert toast_box["x"] + toast_box["width"] > 1200
             assert toast_box["y"] + toast_box["height"] > 800
@@ -135,6 +149,7 @@ def test_local_feed_actions_and_mobile_layout():
             playwright.expect(usage_panel.locator("tbody tr")).to_have_count(25)
 
             page.set_viewport_size({"width": 390, "height": 844})
+            playwright.expect(all_sources_button).to_be_visible()
             sync_box = sync_panel.bounding_box()
             usage_box = usage_panel.bounding_box()
             assert sync_box is not None and usage_box is not None

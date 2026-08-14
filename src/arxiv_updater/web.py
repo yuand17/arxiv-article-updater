@@ -9,11 +9,11 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from .arxiv_schedule import next_arxiv_update_at
-from .config import Settings, get_external_service_states, get_settings
+from .config import get_external_service_states, get_settings
 from .datetime_utils import format_local_datetime
 from .db import get_db, init_db
 from .external_services import (
@@ -67,7 +67,7 @@ TOAST_MESSAGES = {
     "schedule_saved": ("success", "更新计划已保存", "下次运行时间已经重算。"),
     "sync_started": ("info", "更新已启动", "可在活动记录中查看进度。"),
     "service_saved": ("success", "外部服务设置已保存", "新的开关状态已立即生效。"),
-    "service_cleared": ("success", "API key 已清除", "服务已关闭，旧版 .env 值也不会重新启用它。"),
+    "service_cleared": ("success", "API key 已清除", "服务已关闭，安全存储中的密钥已删除。"),
 }
 ACTIVITY_WINDOW_DAYS = 7
 ACTIVITY_ROW_LIMIT = 100
@@ -155,6 +155,10 @@ def settings_context(
     ensure_source_schedules(db)
     preferences = get_preferences(db)
     activity_cutoff = utcnow() - timedelta(days=ACTIVITY_WINDOW_DAYS)
+    accurate_api_usage = or_(
+        ApiUsage.service != "serpapi",
+        ApiUsage.operation != "author_sync",
+    )
     runs = db.scalars(
         select(SyncRun)
         .where(SyncRun.started_at >= activity_cutoff)
@@ -163,7 +167,7 @@ def settings_context(
     ).all()
     usage_details = db.scalars(
         select(ApiUsage)
-        .where(ApiUsage.created_at >= activity_cutoff)
+        .where(ApiUsage.created_at >= activity_cutoff, accurate_api_usage)
         .order_by(ApiUsage.created_at.desc(), ApiUsage.id.desc())
         .limit(ACTIVITY_ROW_LIMIT)
     ).all()
@@ -189,7 +193,7 @@ def settings_context(
                 func.sum(ApiUsage.request_count),
                 func.sum(ApiUsage.input_tokens + ApiUsage.output_tokens),
             )
-            .where(ApiUsage.created_at >= activity_cutoff)
+            .where(ApiUsage.created_at >= activity_cutoff, accurate_api_usage)
             .group_by(ApiUsage.service)
         ).all(),
         "external_services": {
@@ -425,18 +429,11 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         if service not in SUPPORTED_SERVICES:
             return HTMLResponse("未知外部服务", status_code=404)
         service_name = cast(ServiceName, service)
-        environment = Settings()
-        environment_api_key = (
-            environment.deepseek_api_key
-            if service_name == "deepseek"
-            else environment.serpapi_api_key
-        )
         try:
             state = save_external_service(
                 service_name,
                 enabled=enabled == "on",
                 new_api_key=api_key,
-                environment_api_key=environment_api_key,
             )
         except (CredentialStoreError, CredentialValidationError) as exc:
             return templates.TemplateResponse(
@@ -653,7 +650,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         background_tasks: BackgroundTasks,
         db: DbSession,
     ) -> Response:
-        if source not in DEFAULT_SOURCE_INTERVALS:
+        if source not in DEFAULT_SOURCE_INTERVALS and source != "all":
             return HTMLResponse("未知来源", status_code=404)
         if source == "scholar" and not get_settings().serpapi_api_key:
             return templates.TemplateResponse(
@@ -662,13 +659,19 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
                 settings_context(db, service_error="SerpAPI 未启用，已阻止 Scholar 更新。"),
                 status_code=422,
             )
-        from .scheduler import run_source_update_in_background
-
-        background_tasks.add_task(
+        from .scheduler import (
+            run_all_source_updates_in_background,
             run_source_update_in_background,
-            source,
-            source == "scirate",
         )
+
+        if source == "all":
+            background_tasks.add_task(run_all_source_updates_in_background)
+        else:
+            background_tasks.add_task(
+                run_source_update_in_background,
+                source,
+                source == "scirate",
+            )
         response = _action_response(request, "sync_started", f"/settings?sync_started={source}")
         if request.headers.get("HX-Request") == "true":
             level, title, message = TOAST_MESSAGES["sync_started"]
@@ -689,7 +692,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         db: DbSession,
         after: Annotated[datetime, Query()],
     ) -> JSONResponse:
-        if source not in DEFAULT_SOURCE_INTERVALS:
+        if source not in DEFAULT_SOURCE_INTERVALS and source != "all":
             return JSONResponse({"status": "unknown"}, status_code=404)
         run = db.scalar(
             select(SyncRun)

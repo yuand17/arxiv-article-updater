@@ -9,7 +9,7 @@
     schedule_saved: ["success", "更新计划已保存", "下次运行时间已经重算。"],
     sync_started: ["info", "更新已启动", "可在活动记录中查看进度。"],
     service_saved: ["success", "外部服务设置已保存", "新的开关状态已立即生效。"],
-    service_cleared: ["success", "API key 已清除", "服务已关闭，旧版 .env 值也不会重新启用它。"],
+    service_cleared: ["success", "API key 已清除", "服务已关闭，安全存储中的密钥已删除。"],
   };
   let sequence = 0;
 
@@ -67,7 +67,7 @@
           showToast({
             level: "success",
             title: "更新完成",
-            message: `读取 ${result.items_seen} 条，新增 ${result.items_created} 篇。`,
+            message: result.message || `读取 ${result.items_seen} 条，新增 ${result.items_created} 篇。`,
           });
         } else {
           showToast({

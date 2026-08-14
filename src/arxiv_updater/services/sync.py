@@ -21,7 +21,7 @@ from ..security import redact_sensitive_text
 from ..sources.arxiv import ArxivAdapter
 from ..sources.base import PaperCandidate
 from ..sources.journals import JournalAdapter, JournalFeed
-from ..sources.scholar import ScholarAdapter
+from ..sources.scholar import ScholarAdapter, SerpApiAccountUsage
 from ..sources.scirate import SciRateAdapter
 from .article_classification import classify_journal_candidate
 from .papers import upsert_paper
@@ -32,11 +32,17 @@ def _month_start() -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-def _serpapi_queries_this_month(db: Session) -> int:
+SERPAPI_SINGLE_USER_MONTHLY_LIMIT = 250
+SERPAPI_BILLED_OPERATION = "author_sync_billed"
+
+
+def _serpapi_billed_queries_this_month(db: Session) -> int:
     return int(
         db.scalar(
             select(func.coalesce(func.sum(ApiUsage.request_count), 0)).where(
-                ApiUsage.service == "serpapi", ApiUsage.created_at >= _month_start()
+                ApiUsage.service == "serpapi",
+                ApiUsage.operation == SERPAPI_BILLED_OPERATION,
+                ApiUsage.created_at >= _month_start(),
             )
         )
         or 0
@@ -51,21 +57,27 @@ def _build_adapter(db: Session, name: str, *, allow_browser_challenge: bool = Fa
     if name == "scirate":
         return SciRateAdapter(allow_browser_challenge=allow_browser_challenge)
     if name == "scholar":
-        settings = get_settings()
-        used = _serpapi_queries_this_month(db)
-        remaining = max(0, settings.serpapi_monthly_query_budget - used)
         authors = db.scalars(
             select(TrackedAuthor)
             .order_by(TrackedAuthor.last_synced_at.asc().nullsfirst())
         ).all()
         if not authors:
             raise RuntimeError("No tracked authors")
+        adapter = ScholarAdapter([author.scholar_author_id for author in authors])
+        try:
+            account_usage = adapter.fetch_account_usage()
+        except RuntimeError:
+            billed = _serpapi_billed_queries_this_month(db)
+            remaining = max(0, SERPAPI_SINGLE_USER_MONTHLY_LIMIT - billed)
+        else:
+            adapter.account_usage_before = account_usage
+            remaining = account_usage.total_searches_left
         if remaining < len(authors):
             raise RuntimeError(
-                f"SerpAPI budget is insufficient: {remaining} requests remain for "
-                f"{len(authors)} tracked authors"
+                f"SerpAPI 月度额度不足：当前剩余 {remaining} 次，"
+                f"同步 {len(authors)} 位重点作者最多需要 {len(authors)} 次"
             )
-        return ScholarAdapter([author.scholar_author_id for author in authors])
+        return adapter
     raise ValueError(f"Unknown source: {name}")
 
 
@@ -346,13 +358,15 @@ def sync_sources(
                         if author_id in adapter.author_citation_counts:
                             author.citation_count = adapter.author_citation_counts[author_id]
                             author.citation_count_updated_at = synced_at
-                db.add(
-                    ApiUsage(
-                        service="serpapi",
-                        operation="author_sync",
-                        request_count=len(adapter.author_ids),
+                billed_requests = _serpapi_billed_requests(adapter)
+                if billed_requests:
+                    db.add(
+                        ApiUsage(
+                            service="serpapi",
+                            operation=SERPAPI_BILLED_OPERATION,
+                            request_count=billed_requests,
+                        )
                     )
-                )
             run.status = SyncStatus.SUCCESS
         except Exception as exc:
             db.rollback()
@@ -368,6 +382,19 @@ def sync_sources(
         db.commit()
         runs.append(run)
     return runs
+
+
+def _serpapi_billed_requests(adapter: ScholarAdapter) -> int:
+    before = getattr(adapter, "account_usage_before", None)
+    if not isinstance(before, SerpApiAccountUsage):
+        return 0
+    try:
+        after = adapter.fetch_account_usage()
+    except RuntimeError:
+        return 0
+    usage_delta = max(0, after.this_month_usage - before.this_month_usage)
+    remaining_delta = max(0, before.total_searches_left - after.total_searches_left)
+    return max(usage_delta, remaining_delta)
 
 
 def scheduled_sync(source: str = "all") -> None:

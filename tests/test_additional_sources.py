@@ -9,6 +9,7 @@ from arxiv_updater.sources.cache import DailyResponseCache
 from arxiv_updater.sources.journals import JournalFeed, parse_journal_feed
 from arxiv_updater.sources.scholar import (
     ScholarAdapter,
+    SerpApiAccountUsage,
     parse_scholar_author_id,
     parse_scholar_citation_count,
     parse_scholar_response,
@@ -84,6 +85,35 @@ def test_scholar_http_errors_never_include_the_serpapi_key():
     with pytest.raises(RuntimeError, match="SerpAPI 返回 HTTP 401") as caught:
         adapter.fetch()
     assert secret not in str(caught.value)
+
+
+def test_scholar_account_usage_reads_authoritative_quota_without_exposing_key():
+    secret = "serpapi-secret-value"
+
+    def account(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/account.json"
+        assert request.url.params["api_key"] == secret
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "api_key": secret,
+                "searches_per_month": 250,
+                "this_month_usage": 46,
+                "total_searches_left": 204,
+            },
+        )
+
+    adapter = ScholarAdapter(
+        ["Qexu0QwAAAAJ"],
+        settings=Settings(serpapi_api_key=secret),
+        client=httpx.Client(transport=httpx.MockTransport(account)),
+    )
+
+    usage = adapter.fetch_account_usage()
+
+    assert usage == SerpApiAccountUsage(250, 46, 204)
+    assert secret not in repr(usage)
 
 
 def test_scholar_fetch_uses_date_sort_and_keeps_only_latest_ten():
