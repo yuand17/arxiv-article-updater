@@ -171,6 +171,61 @@ def test_security_headers_and_fulltext_signal_require_a_trusted_post(app_client)
         assert interaction is not None
 
 
+def test_fulltext_prefers_doi_and_uses_one_direct_reading_link(app_client):
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        paper = models.Paper(
+            title="Published paper with arXiv links",
+            normalized_title="published paper with arxiv links",
+            abstract="A complete abstract.",
+            abstract_source="arxiv",
+            abstract_status="available",
+            doi="10.1234/published.1",
+            canonical_url="https://arxiv.org/abs/2608.13521",
+            pdf_url="https://arxiv.org/pdf/2608.13521",
+        )
+        db.add(paper)
+        db.commit()
+        paper_id = paper.id
+
+    panel = client.post(f"/papers/{paper_id}/abstract")
+    tracked = client.post(
+        f"/papers/{paper_id}/fulltext",
+        headers={"X-Requested-With": "fetch"},
+        follow_redirects=False,
+    )
+    redirected = client.post(f"/papers/{paper_id}/fulltext", follow_redirects=False)
+
+    assert panel.status_code == 200
+    assert panel.text.count("阅读原文 ↗") == 1
+    assert 'href="https://doi.org/10.1234/published.1"' in panel.text
+    assert f'data-fulltext-signal="/papers/{paper_id}/fulltext"' in panel.text
+    assert "DOI ↗" not in panel.text
+    assert "https://arxiv.org/pdf/2608.13521" not in panel.text
+    assert tracked.status_code == 204
+    assert redirected.status_code == 303
+    assert redirected.headers["location"] == "https://doi.org/10.1234/published.1"
+
+
+def test_unpublished_fulltext_falls_back_to_arxiv_pdf(app_client):
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        paper = models.Paper(
+            title="Unpublished arXiv paper",
+            normalized_title="unpublished arxiv paper",
+            canonical_url="https://arxiv.org/abs/2608.13521",
+            pdf_url="https://arxiv.org/pdf/2608.13521",
+        )
+        db.add(paper)
+        db.commit()
+        paper_id = paper.id
+
+    redirected = client.post(f"/papers/{paper_id}/fulltext", follow_redirects=False)
+
+    assert redirected.status_code == 303
+    assert redirected.headers["location"] == "https://arxiv.org/pdf/2608.13521"
+
+
 @pytest.mark.parametrize(
     ("stored_error", "expected_message"),
     [

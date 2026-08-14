@@ -40,8 +40,13 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
             first_author="alice example",
             published_at=datetime.now(UTC),
             categories=["quant-ph"],
+            doi="10.1234/browser.test",
+            canonical_url="https://arxiv.org/abs/2608.13521",
+            pdf_url="https://arxiv.org/pdf/2608.13521",
         )
         db.add(paper)
+        db.flush()
+        paper_id = paper.id
         now = datetime.now(UTC)
         db.add_all(
             [
@@ -111,6 +116,28 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
                 "quantum information"
             )
             playwright.expect(page.locator(".abstract-panel .katex")).to_be_visible()
+            fulltext_link = page.get_by_role("link", name="阅读原文", exact=False)
+            playwright.expect(fulltext_link).to_have_count(1)
+            playwright.expect(fulltext_link).to_have_attribute(
+                "href", "https://doi.org/10.1234/browser.test"
+            )
+            page.context.route(
+                "https://doi.org/**",
+                lambda route: route.fulfill(
+                    status=200, content_type="text/html", body="DOI destination"
+                ),
+            )
+            with page.expect_response(
+                lambda response: response.request.method == "POST"
+                and response.url.endswith(f"/papers/{paper_id}/fulltext")
+            ) as signal_response, page.expect_popup() as popup_info:
+                fulltext_link.click()
+            assert signal_response.value.status == 204
+            popup = popup_info.value
+            popup.wait_for_load_state("load")
+            assert popup.url == "https://doi.org/10.1234/browser.test"
+            playwright.expect(popup.get_by_text("DOI destination")).to_be_visible()
+            popup.close()
             page.locator("button[hx-post$='/save']").click()
             playwright.expect(page.locator("button[hx-post$='/save']")).to_have_class(
                 re.compile(r"\bis-saved\b")

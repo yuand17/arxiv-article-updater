@@ -466,14 +466,20 @@ def create_app(
         return HTMLResponse("")
 
     @app.post("/papers/{paper_id}/fulltext")
-    def fulltext(paper_id: str, db: DbSession) -> Response:
+    def fulltext(request: Request, paper_id: str, db: DbSession) -> Response:
         paper = db.get(Paper, paper_id)
         if paper is None:
             return HTMLResponse("论文不存在", status_code=404)
-        target = paper.pdf_url or paper.canonical_url
+        target = (
+            f"https://doi.org/{paper.doi}"
+            if paper.doi
+            else paper.pdf_url or paper.canonical_url
+        )
         if not target:
             return HTMLResponse("这篇论文没有可用的外部链接", status_code=404)
         record_interaction(db, paper_id, InteractionKind.FULLTEXT)
+        if request.headers.get("X-Requested-With") == "fetch":
+            return Response(status_code=204)
         return RedirectResponse(target, status_code=303)
 
     @app.get("/settings", response_class=HTMLResponse)

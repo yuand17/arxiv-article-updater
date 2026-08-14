@@ -66,6 +66,19 @@
     const form = event.target.closest("[data-confirm-message]");
     if (form && !window.confirm(form.dataset.confirmMessage)) event.preventDefault();
   });
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-fulltext-signal]");
+    const signalUrl = link?.dataset.fulltextSignal;
+    if (!signalUrl) return;
+    window.fetch(signalUrl, {
+      method: "POST",
+      headers: { "X-Requested-With": "fetch" },
+      credentials: "same-origin",
+      keepalive: true,
+    }).catch(() => {
+      // Reading should never be blocked by a failed local interest signal.
+    });
+  });
   document.addEventListener("app:toast", (event) => showToast(event.detail || {}));
   document.addEventListener("htmx:afterSwap", (event) => renderMath(event.detail.target));
   document.addEventListener("app:sync-started", async (event) => {
