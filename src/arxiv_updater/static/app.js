@@ -4,8 +4,7 @@
     profile_started: ["info", "画像重建已启动", "完成后会用于后续推荐。"],
     author_added: ["success", "重点作者已添加", "已加入后续 Scholar 同步。"],
     author_removed: ["success", "重点作者已移除", "既有论文不会被立即删除。"],
-    journal_added: ["success", "期刊已添加", "第一次同步已经启动。"],
-    journal_removed: ["success", "期刊已移除", "既有论文将按保留规则处理。"],
+    journal_subscription_saved: ["success", "期刊订阅已更新", "开关已经生效；既有论文会继续保留。"],
     schedule_saved: ["success", "更新计划已保存", "下次运行时间已经重算。"],
     sync_started: ["info", "更新已启动", "可在活动记录中查看进度。"],
     service_saved: ["success", "外部服务设置已保存", "新的开关状态已立即生效。"],
@@ -46,6 +45,8 @@
   document.addEventListener("change", (event) => {
     const toggle = event.target.closest("[data-service-toggle]");
     if (toggle) updateServiceKeyFields(toggle);
+    const autoSubmit = event.target.closest("[data-auto-submit]");
+    if (autoSubmit && autoSubmit.form) autoSubmit.form.requestSubmit();
   });
   document.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-confirm-message]");
@@ -98,32 +99,6 @@
       const url = new URL(window.location.href);
       url.searchParams.delete("toast");
       window.history.replaceState({}, "", url);
-    }
-  });
-  document.addEventListener("htmx:beforeRequest", (event) => {
-    const form = event.detail.elt.closest("[data-loading-toast]");
-    if (!form) return;
-    const button = form.querySelector("button[type='submit'], button:not([type])");
-    if (button) {
-      button.dataset.originalText = button.textContent;
-      button.textContent = "查找中…";
-      button.disabled = true;
-    }
-    form._loadingToast = showToast({
-      level: "info",
-      title: "正在查找期刊来源",
-      message: form.dataset.loadingToast,
-      persistent: true,
-    });
-  });
-  document.addEventListener("htmx:afterRequest", (event) => {
-    const form = event.detail.elt.closest("[data-loading-toast]");
-    if (!form) return;
-    if (form._loadingToast) removeToast(form._loadingToast);
-    const button = form.querySelector("button[type='submit'], button:not([type])");
-    if (button) {
-      button.textContent = button.dataset.originalText || "查找期刊";
-      button.disabled = false;
     }
   });
 })();

@@ -20,7 +20,7 @@ from arxiv_updater.services.recommendations import (
 )
 from arxiv_updater.services.retention import run_retention_cleanup
 from arxiv_updater.sources.base import PaperCandidate
-from arxiv_updater.sources.journals import JournalFeed, parse_crossref_works
+from arxiv_updater.sources.journals import JournalAdapter, JournalFeed, parse_crossref_works
 
 
 def _candidate(
@@ -381,6 +381,63 @@ def test_crossref_works_parser_keeps_structured_research_evidence():
     assert papers[0].authors == ["Ada Lovelace"]
     assert papers[0].metadata["document_type"] == "article"
     assert papers[0].metadata["subjects"] == ["Condensed Matter Physics"]
+
+
+def test_official_rss_is_enriched_by_crossref_without_importing_crossref_only_items():
+    rss = """<?xml version="1.0"?><rss version="2.0"
+      xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>Science</title>
+      <item><title>Quantum collision result</title>
+      <link>https://www.science.org/doi/10.1126/science.test1</link>
+      <guid>10.1126/science.test1</guid><dc:type>Research Article</dc:type>
+      <pubDate>Sun, 09 Aug 2026 10:00:00 GMT</pubDate>
+      <description>Issue citation without an abstract.</description></item></channel></rss>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.crossref.org":
+            return httpx.Response(
+                200,
+                json={
+                    "message": {
+                        "items": [
+                            {
+                                "title": ["Quantum collision result"],
+                                "DOI": "10.1126/science.test1",
+                                "published-online": {"date-parts": [[2026, 8, 9]]},
+                                "type": "journal-article",
+                                "abstract": "<jats:p>Quantum spin collision abstract.</jats:p>",
+                                "author": [{"given": "Ada", "family": "Lovelace"}],
+                            },
+                            {
+                                "title": ["Crossref only"],
+                                "DOI": "10.1126/science.unlisted",
+                                "published-online": {"date-parts": [[2026, 8, 9]]},
+                                "type": "journal-article",
+                            },
+                        ]
+                    }
+                },
+            )
+        return httpx.Response(200, text=rss)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        candidates = JournalAdapter(
+            feeds=[
+                JournalFeed("Science", "https://www.science.org/science.rss", "1095-9203"),
+                JournalFeed(
+                    "Science",
+                    "https://api.crossref.org/journals/1095-9203/works",
+                    "1095-9203",
+                    "crossref",
+                ),
+            ],
+            client=client,
+        ).fetch()
+
+    assert len(candidates) == 1
+    assert candidates[0].external_id == "10.1126/science.test1"
+    assert candidates[0].abstract == "Quantum spin collision abstract."
+    assert candidates[0].authors == ["Ada Lovelace"]
+    assert candidates[0].metadata["document_type"] == "Research Article"
 
 
 def test_public_https_validation_rejects_private_resolution_and_credentials():

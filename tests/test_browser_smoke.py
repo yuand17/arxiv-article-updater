@@ -130,6 +130,21 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
             assert toast_box is not None
             assert toast_box["x"] + toast_box["width"] > 1200
             assert toast_box["y"] + toast_box["height"] > 800
+            science_toggle = page.get_by_label("订阅 Science", exact=True)
+            nature_toggle = page.get_by_label("订阅 Nature", exact=True)
+            playwright.expect(science_toggle).to_be_checked()
+            playwright.expect(nature_toggle).to_be_checked()
+            page.locator(
+                'input[aria-label="订阅 Science"] + .ios-switch-track'
+            ).click()
+            playwright.expect(science_toggle).not_to_be_checked()
+            playwright.expect(nature_toggle).to_be_checked()
+            playwright.expect(
+                page.locator(".toast", has_text="期刊订阅已更新").last
+            ).to_be_visible()
+            page.reload()
+            playwright.expect(science_toggle).not_to_be_checked()
+            playwright.expect(nature_toggle).to_be_checked()
 
             sync_panel = page.locator('[aria-label="最近同步历史"]')
             usage_panel = page.locator('[aria-label="API 用量明细"]')

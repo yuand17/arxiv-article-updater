@@ -29,8 +29,6 @@ from .models import (
     ApiUsage,
     Interaction,
     InteractionKind,
-    JournalEndpoint,
-    JournalSubscription,
     Paper,
     SourceSchedule,
     SyncRun,
@@ -40,11 +38,7 @@ from .models import (
 from .scheduler import DEFAULT_SOURCE_INTERVALS, ensure_source_schedules
 from .services.abstracts import enrich_paper_abstract_in_background
 from .services.interactions import record_interaction, remove_interaction
-from .services.journal_discovery import (
-    JournalDiscoveryError,
-    JournalDiscoveryPreview,
-    discover_journal,
-)
+from .services.journal_catalog import ensure_builtin_journals
 from .services.preferences import (
     get_preferences,
     mark_preferences_dirty,
@@ -61,9 +55,11 @@ TOAST_MESSAGES = {
     "profile_started": ("info", "画像重建已启动", "完成后会自动用于后续推荐。"),
     "author_added": ("success", "重点作者已添加", "已加入后续 Scholar 同步。"),
     "author_removed": ("success", "重点作者已移除", "既有论文不会被立即删除。"),
-    "journal_found": ("success", "期刊来源已找到", "请核对预览后确认添加。"),
-    "journal_added": ("success", "期刊已添加", "第一次同步已经启动。"),
-    "journal_removed": ("success", "期刊已移除", "既有论文将按保留规则处理。"),
+    "journal_subscription_saved": (
+        "success",
+        "期刊订阅已更新",
+        "开关已经生效；既有论文会继续保留。",
+    ),
     "schedule_saved": ("success", "更新计划已保存", "下次运行时间已经重算。"),
     "sync_started": ("info", "更新已启动", "可在活动记录中查看进度。"),
     "service_saved": ("success", "外部服务设置已保存", "新的开关状态已立即生效。"),
@@ -147,12 +143,11 @@ def settings_context(
     db: Session,
     *,
     saved: bool = False,
-    journal_error: str = "",
-    journal_preview: JournalDiscoveryPreview | None = None,
     service_error: str = "",
     sync_started: str = "",
 ) -> dict[str, object]:
     ensure_source_schedules(db)
+    journal_feeds = ensure_builtin_journals(db)
     preferences = get_preferences(db)
     activity_cutoff = utcnow() - timedelta(days=ACTIVITY_WINDOW_DAYS)
     accurate_api_usage = or_(
@@ -181,9 +176,7 @@ def settings_context(
                 TrackedAuthor.created_at,
             )
         ).all(),
-        "journal_feeds": db.scalars(
-            select(JournalSubscription).order_by(JournalSubscription.name)
-        ).all(),
+        "journal_feeds": journal_feeds,
         "schedules": db.scalars(select(SourceSchedule).order_by(SourceSchedule.source)).all(),
         "runs": runs,
         "usage_details": usage_details,
@@ -202,8 +195,6 @@ def settings_context(
         "activity_window_days": ACTIVITY_WINDOW_DAYS,
         "activity_row_limit": ACTIVITY_ROW_LIMIT,
         "saved": saved,
-        "journal_error": journal_error,
-        "journal_preview": journal_preview,
         "service_error": service_error,
         "sync_started": sync_started,
     }
@@ -225,7 +216,6 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
                 scheduler.shutdown(wait=True)
 
     app = FastAPI(title="arXiv Updater", lifespan=lifespan)
-    app.state.journal_previews = {}
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/health")
@@ -369,7 +359,6 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     def settings_page(
         request: Request,
         db: DbSession,
-        journal_error: str = Query(""),
         sync_started: str = Query(""),
     ) -> Response:
         return templates.TemplateResponse(
@@ -377,7 +366,6 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             "settings.html",
             settings_context(
                 db,
-                journal_error=journal_error,
                 sync_started=(
                     sync_started if sync_started in DEFAULT_SOURCE_INTERVALS else ""
                 ),
@@ -519,98 +507,22 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
             db.commit()
         return _settings_fragment(request, db, "author_removed")
 
-    @app.post("/settings/journals/discover", response_class=HTMLResponse)
-    def preview_journal(
+    @app.post("/settings/journals/{feed_id}/toggle")
+    def toggle_journal(
         request: Request,
+        feed_id: str,
         db: DbSession,
-        name: str = Form(),
-        homepage_url: str = Form(),
+        enabled: str | None = Form(None),
     ) -> Response:
-        try:
-            preview = discover_journal(name, homepage_url)
-        except JournalDiscoveryError as exc:
-            response = templates.TemplateResponse(
-                request,
-                "settings.html",
-                settings_context(db, journal_error=str(exc)),
-                status_code=422,
-            )
-            response.headers["HX-Trigger"] = json.dumps(
-                {
-                    "app:toast": {
-                        "level": "error",
-                        "title": "期刊发现失败",
-                        "message": str(exc),
-                    }
-                },
-            )
-            return response
-        previews: dict[str, JournalDiscoveryPreview] = app.state.journal_previews
-        previews[preview.token] = preview
-        while len(previews) > 10:
-            previews.pop(next(iter(previews)))
-        response = templates.TemplateResponse(
-            request,
-            "settings.html",
-            settings_context(db, journal_preview=preview),
-        )
-        return _add_toast(response, "journal_found")
-
-    @app.post("/settings/journals/confirm")
-    def confirm_journal(
-        request: Request,
-        background_tasks: BackgroundTasks,
-        db: DbSession,
-        token: str = Form(),
-    ) -> Response:
-        previews: dict[str, JournalDiscoveryPreview] = app.state.journal_previews
-        preview = previews.pop(token, None)
-        if preview is None:
-            return RedirectResponse("/settings?journal_error=expired", status_code=303)
-        exists = db.scalar(
-            select(JournalSubscription).where(
-                JournalSubscription.homepage_url == preview.homepage_url
-            )
-        )
-        if not exists:
-            subscription = JournalSubscription(
-                name=preview.name,
-                homepage_url=preview.homepage_url,
-                canonical_domain=preview.canonical_domain,
-                issn_online=preview.issn_online,
-                issn_print=preview.issn_print,
-                scope_kind=preview.scope_kind,
-                discovery_status="verified",
-                discovery_version=preview.version,
-                last_discovered_at=utcnow(),
-            )
-            db.add(subscription)
-            db.flush()
-            db.add_all(
-                [
-                    JournalEndpoint(
-                        journal_subscription_id=subscription.id,
-                        kind=endpoint.kind,
-                        url=endpoint.url,
-                        priority=endpoint.priority,
-                        last_validated_at=utcnow(),
-                    )
-                    for endpoint in preview.endpoints
-                ]
-            )
-            db.commit()
-            from .scheduler import run_source_update_in_background
-
-            background_tasks.add_task(run_source_update_in_background, "journals")
-        return _settings_fragment(request, db, "journal_added")
-
-    @app.post("/settings/journals/{feed_id}/delete")
-    def delete_journal(request: Request, feed_id: str, db: DbSession) -> Response:
-        feed = db.get(JournalSubscription, feed_id)
-        if feed:
-            db.delete(feed)
-            db.commit()
-        return _settings_fragment(request, db, "journal_removed")
+        builtin_feeds = ensure_builtin_journals(db)
+        feed = next((item for item in builtin_feeds if item.id == feed_id), None)
+        if feed is None:
+            return HTMLResponse("未知内置期刊", status_code=404)
+        feed.is_active = enabled == "on"
+        if feed.is_active:
+            feed.last_error = ""
+        db.commit()
+        return _settings_fragment(request, db, "journal_subscription_saved")
 
     @app.post("/settings/schedules/{source}")
     def save_source_schedule(
@@ -622,6 +534,9 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     ) -> Response:
         if source not in DEFAULT_SOURCE_INTERVALS or not 1 <= interval_days <= 30:
             return RedirectResponse("/settings?schedule_error=1", status_code=303)
+        if source == "journals":
+            interval_days = 1
+            enabled = "on"
         if source == "scholar" and not get_settings().serpapi_api_key:
             return templates.TemplateResponse(
                 request,
@@ -633,7 +548,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         schedule = db.get(SourceSchedule, source)
         if schedule:
             schedule.interval_days = interval_days
-            schedule.enabled = True if source == "scholar" else enabled == "on"
+            schedule.enabled = True if source in {"scholar", "journals"} else enabled == "on"
             schedule.next_due_at = (
                 next_arxiv_update_at(utcnow())
                 if source == "arxiv"

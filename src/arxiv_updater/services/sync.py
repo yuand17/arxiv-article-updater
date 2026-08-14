@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..datetime_utils import as_utc
@@ -24,6 +24,7 @@ from ..sources.journals import JournalAdapter, JournalFeed
 from ..sources.scholar import ScholarAdapter, SerpApiAccountUsage
 from ..sources.scirate import SciRateAdapter
 from .article_classification import classify_journal_candidate
+from .journal_catalog import CATALOG_VERSION, ensure_builtin_journals
 from .papers import upsert_paper
 
 
@@ -177,12 +178,11 @@ def _seen_item_blocks(db: Session, candidate: PaperCandidate) -> bool:
 
 
 def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
-    subscriptions = db.scalars(
-        select(JournalSubscription)
-        .options(selectinload(JournalSubscription.endpoints))
-        .where(JournalSubscription.is_active.is_(True))
-        .order_by(JournalSubscription.name)
-    ).all()
+    subscriptions = [
+        subscription
+        for subscription in ensure_builtin_journals(db)
+        if subscription.is_active
+    ]
     total_seen = total_created = 0
     errors: list[str] = []
     for subscription in subscriptions:
@@ -205,7 +205,8 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
             if endpoint.kind in {"rss", "atom", "crossref"}
         ]
         try:
-            candidates = JournalAdapter(feeds=feeds).fetch(since)
+            adapter = JournalAdapter(feeds=feeds)
+            candidates = adapter.fetch(since)
             scanned = imported = nonresearch = nonphysics = 0
             for candidate in candidates:
                 scanned += 1
@@ -215,6 +216,7 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
                     journal_name=subscription.name,
                     scope_kind=subscription.scope_kind,
                 )
+                classification_version = f"{result.version}+{CATALOG_VERSION}"
                 existing_seen = db.scalar(
                     select(SeenSourceItem).where(
                         SeenSourceItem.source == candidate.source,
@@ -225,6 +227,7 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
                     existing_seen
                     and existing_seen.paper_id is None
                     and existing_seen.outcome in {"cleaned", "nonresearch", "nonphysics"}
+                    and existing_seen.classification_version == classification_version
                 ):
                     existing_seen.last_seen_at = utcnow()
                     continue
@@ -236,7 +239,7 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
                         candidate,
                         outcome=result.outcome,
                         reason=result.reason,
-                        version=result.version,
+                        version=classification_version,
                     )
                     continue
                 upserted = upsert_paper(db, candidate)
@@ -247,7 +250,7 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
                 paper.physics_confidence = result.physics_confidence
                 paper.classification_reason = result.reason
                 paper.classification_source = result.source
-                paper.classification_version = result.version
+                paper.classification_version = classification_version
                 paper.classified_at = result.classified_at
                 imported += int(upserted.created)
                 _record_seen(
@@ -255,11 +258,11 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
                     candidate,
                     outcome="imported" if upserted.created else "duplicate",
                     reason=result.reason,
-                    version=result.version,
+                    version=classification_version,
                     paper_id=paper.id,
                 )
             subscription.last_success_at = utcnow()
-            subscription.last_error = ""
+            subscription.last_error = "; ".join(adapter.errors)[:2000]
             subscription.last_items_seen = scanned
             subscription.last_items_imported = imported
             subscription.last_nonresearch_filtered = nonresearch

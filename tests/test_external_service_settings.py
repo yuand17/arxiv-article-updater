@@ -35,7 +35,9 @@ def test_settings_renders_ios_switches_without_returning_secrets(
     response = client.get("/settings")
 
     assert response.status_code == 200
-    assert response.text.count('class="ios-switch"') == 2
+    assert response.text.count('class="ios-switch"') == 10
+    assert response.text.count('data-service-toggle') == 2
+    assert response.text.count('data-auto-submit') == 8
     assert response.text.count('type="password"') == 2
     assert "Windows 用户的凭据管理器" in response.text
     assert "value=\"test-secret\"" not in response.text

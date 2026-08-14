@@ -46,13 +46,55 @@ def test_successful_arxiv_update_uses_announcement_schedule(app_client):
         assert schedule.next_due_at == datetime(2026, 8, 17, 0, 10)
 
 
-def test_journal_schedule_defaults_to_daily(app_client):
+def test_journal_schedule_is_always_enabled_and_daily(app_client):
     _, session_factory, models = app_client
     with session_factory() as db:
         ensure_source_schedules(db)
         schedule = db.get(models.SourceSchedule, "journals")
         assert schedule is not None
+        schedule.enabled = False
+        schedule.interval_days = 7
+        db.commit()
+        ensure_source_schedules(db)
+        db.refresh(schedule)
+        assert schedule.enabled is True
         assert schedule.interval_days == 1
+
+
+def test_journal_sync_skips_only_the_individually_disabled_journal(
+    app_client, monkeypatch
+):
+    client, session_factory, models = app_client
+    client.get("/settings")
+    fetched: list[str] = []
+
+    def record_fetch(adapter, since):
+        fetched.append(adapter.feeds[0].name)
+        return []
+
+    monkeypatch.setattr(sync_module.JournalAdapter, "fetch", record_fetch)
+    with session_factory() as db:
+        science = db.scalar(
+            select(models.JournalSubscription).where(
+                models.JournalSubscription.name == "Science"
+            )
+        )
+        assert science is not None
+        science.is_active = False
+        db.commit()
+        seen, created, errors = sync_module._sync_journals(db)
+
+    assert (seen, created, errors) == (0, 0, [])
+    assert "Science" not in fetched
+    assert fetched == [
+        "Nature",
+        "Nature Physics",
+        "Nature Communications",
+        "Science Advances",
+        "Physical Review Letters",
+        "Physical Review X",
+        "PRX Quantum",
+    ]
 
 
 def test_scholar_sync_fails_before_partial_update_when_live_quota_is_insufficient(

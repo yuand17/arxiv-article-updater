@@ -194,10 +194,18 @@ class JournalAdapter(SourceAdapter):
         self.errors: list[str] = []
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
-        candidates: list[PaperCandidate] = []
+        primary_candidates: list[PaperCandidate] = []
+        enrichment_candidates: list[PaperCandidate] = []
+        has_primary_feed = any(journal.kind != "crossref" for journal in self.feeds)
         for journal in self.feeds:
             if journal.kind == "crossref":
-                candidates.extend(self._fetch_crossref(journal, since))
+                enrichment_candidates.extend(
+                    self._fetch_crossref(
+                        journal,
+                        since,
+                        max_pages=1 if has_primary_feed else 100,
+                    )
+                )
                 continue
             try:
                 response = self.client.get(
@@ -214,17 +222,26 @@ class JournalAdapter(SourceAdapter):
                     published = published.replace(tzinfo=UTC)
                 if since and published and published < since:
                     continue
-                candidates.append(candidate)
+                primary_candidates.append(candidate)
+        candidates = (
+            _merge_enrichment(primary_candidates, enrichment_candidates)
+            if has_primary_feed
+            else _deduplicate_candidates(enrichment_candidates)
+        )
         if not candidates and self.errors:
             raise RuntimeError("; ".join(self.errors))
         return candidates
 
     def _fetch_crossref(
-        self, journal: JournalFeed, since: datetime | None
+        self,
+        journal: JournalFeed,
+        since: datetime | None,
+        *,
+        max_pages: int = 100,
     ) -> list[PaperCandidate]:
         cursor = "*"
         results: list[PaperCandidate] = []
-        for _page in range(100):
+        for _page in range(max_pages):
             params: dict[str, str | int] = {
                 "rows": 100,
                 "cursor": cursor,
@@ -252,3 +269,59 @@ class JournalAdapter(SourceAdapter):
                 break
             cursor = next_cursor
         return results
+
+
+def _candidate_key(candidate: PaperCandidate) -> str:
+    return (candidate.doi or candidate.external_id).strip().lower()
+
+
+def _merge_candidate(primary: PaperCandidate, supplement: PaperCandidate) -> None:
+    """Fill sparse official-feed metadata without changing its article universe."""
+
+    if supplement.abstract:
+        primary.abstract = supplement.abstract
+    if not primary.authors and supplement.authors:
+        primary.authors = supplement.authors
+    if primary.published_at is None:
+        primary.published_at = supplement.published_at
+    if not primary.canonical_url:
+        primary.canonical_url = supplement.canonical_url
+    primary.categories = sorted(set(primary.categories + supplement.categories))
+    primary_subjects = primary.metadata.get("subjects") or []
+    supplement_subjects = supplement.metadata.get("subjects") or []
+    primary.metadata["subjects"] = sorted(set(primary_subjects + supplement_subjects))
+    for key, value in supplement.metadata.items():
+        if key == "subjects":
+            continue
+        if not primary.metadata.get(key) and value:
+            primary.metadata[key] = value
+
+
+def _deduplicate_candidates(candidates: list[PaperCandidate]) -> list[PaperCandidate]:
+    by_key: dict[str, PaperCandidate] = {}
+    for candidate in candidates:
+        key = _candidate_key(candidate)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = candidate
+        else:
+            _merge_candidate(existing, candidate)
+    return list(by_key.values())
+
+
+def _merge_enrichment(
+    primary_candidates: list[PaperCandidate],
+    enrichment_candidates: list[PaperCandidate],
+) -> list[PaperCandidate]:
+    """Enrich RSS entries by DOI and discard Crossref-only records."""
+
+    primary = _deduplicate_candidates(primary_candidates)
+    enrichment = {
+        _candidate_key(candidate): candidate
+        for candidate in _deduplicate_candidates(enrichment_candidates)
+    }
+    for candidate in primary:
+        supplement = enrichment.get(_candidate_key(candidate))
+        if supplement is not None:
+            _merge_candidate(candidate, supplement)
+    return primary

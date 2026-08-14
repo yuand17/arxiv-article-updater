@@ -83,7 +83,20 @@ def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_
                 connection.exec_driver_sql(
                     "SELECT COUNT(*) FROM journal_subscriptions"
                 ).scalar_one()
-                == 0
+                == 8
+            )
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT COUNT(*) FROM journal_endpoints"
+                ).scalar_one()
+                == 12
+            )
+            assert connection.exec_driver_sql(
+                "SELECT group_concat(name, '|') FROM "
+                "(SELECT name FROM journal_subscriptions ORDER BY name)"
+            ).scalar_one() == (
+                "Nature|Nature Communications|Nature Physics|PRX Quantum|"
+                "Physical Review Letters|Physical Review X|Science|Science Advances"
             )
             assert (
                 connection.exec_driver_sql(
@@ -146,7 +159,7 @@ def test_settings_sorts_tracked_authors_by_citation_count(app_client):
     assert 'class="follow-list author-list"' in response.text
 
 
-def test_local_settings_discovers_then_confirms_a_journal(app_client, monkeypatch):
+def test_local_settings_seeds_fixed_journals_and_toggles_each_independently(app_client):
     client, session_factory, models = app_client
     settings_response = client.get("/settings")
     assert settings_response.status_code == 200
@@ -156,83 +169,58 @@ def test_local_settings_discovers_then_confirms_a_journal(app_client, monkeypatc
     assert "美东时间周日至周四 20:00 发布" in settings_response.text
     assert "北京时间夏令时周一至周五 08:10" in settings_response.text
     assert "成员邀请" not in settings_response.text
+    assert "查找期刊" not in settings_response.text
+    assert "期刊官网" not in settings_response.text
+    assert settings_response.text.count('data-auto-submit aria-label="订阅 ') == 8
+    names = [
+        "Nature",
+        "Nature Physics",
+        "Nature Communications",
+        "Science",
+        "Science Advances",
+        "Physical Review Letters",
+        "Physical Review X",
+        "PRX Quantum",
+    ]
+    for name in names:
+        assert name in settings_response.text
 
-    from arxiv_updater.services.journal_discovery import (
-        DiscoveredEndpoint,
-        JournalDiscoveryPreview,
-        PreviewPaper,
-    )
-
-    preview = JournalDiscoveryPreview(
-        token="preview-token",
-        name="Example Physics",
-        homepage_url="https://journals.example.org/physics",
-        canonical_domain="journals.example.org",
-        issn_online="1234-5678",
-        issn_print="",
-        scope_kind="physics",
-        endpoints=[DiscoveredEndpoint("rss", "https://journals.example.org/rss", 10)],
-        scanned_count=4,
-        nonresearch_filtered=1,
-        nonphysics_filtered=0,
-        papers=[PreviewPaper("Quantum result", "A. Author", "2026-08-09")],
-    )
-    monkeypatch.setattr("arxiv_updater.web.discover_journal", lambda name, url: preview)
-    monkeypatch.setattr(
-        "arxiv_updater.scheduler.run_source_update_in_background", lambda source: None
-    )
+    with session_factory() as db:
+        feeds = list(db.scalars(select(models.JournalSubscription)))
+        assert len(feeds) == 8
+        assert all(feed.is_active for feed in feeds)
+        science = next(feed for feed in feeds if feed.name == "Science")
+        science_id = science.id
 
     response = client.post(
-        "/settings/journals/discover",
-        data={
-            "name": "Example Physics",
-            "homepage_url": "https://journals.example.org/physics",
-        },
+        f"/settings/journals/{science_id}/toggle",
+        headers={"HX-Request": "true"},
     )
     assert response.status_code == 200
-    assert "Quantum result" in response.text
+    assert json.loads(response.headers["HX-Trigger"])["app:toast"]["title"] == (
+        "期刊订阅已更新"
+    )
+    with session_factory() as db:
+        science = db.get(models.JournalSubscription, science_id)
+        assert science is not None and science.is_active is False
+        assert all(
+            feed.is_active
+            for feed in db.scalars(
+                select(models.JournalSubscription).where(
+                    models.JournalSubscription.id != science_id
+                )
+            )
+        )
+
     response = client.post(
-        "/settings/journals/confirm",
-        data={"token": "preview-token"},
+        f"/settings/journals/{science_id}/toggle",
+        data={"enabled": "on"},
         follow_redirects=False,
     )
     assert response.status_code == 303
     with session_factory() as db:
-        feed = db.scalar(
-            select(models.JournalSubscription).where(
-                models.JournalSubscription.name == "Example Physics"
-            )
-        )
-        assert feed is not None
-        assert feed.issn_online == "1234-5678"
-        assert len(feed.endpoints) == 1
-
-    second_preview = JournalDiscoveryPreview(
-        token="second-preview-token",
-        name="Example Quantum",
-        homepage_url="https://journals.example.org/quantum",
-        canonical_domain="journals.example.org",
-        issn_online="2345-6789",
-        issn_print="",
-        scope_kind="physics",
-        endpoints=[DiscoveredEndpoint("rss", "https://journals.example.org/quantum.rss", 10)],
-        scanned_count=3,
-        nonresearch_filtered=0,
-        nonphysics_filtered=0,
-        papers=[PreviewPaper("Second quantum result", "B. Author", "2026-08-10")],
-    )
-    monkeypatch.setattr(
-        "arxiv_updater.web.discover_journal", lambda name, url: second_preview
-    )
-    response = client.post(
-        "/settings/journals/discover",
-        data={
-            "name": "Example Quantum",
-            "homepage_url": "https://journals.example.org/quantum",
-        },
-    )
-    assert response.status_code == 200
-    assert "Second quantum result" in response.text
+        science = db.get(models.JournalSubscription, science_id)
+        assert science is not None and science.is_active is True
 
 
 def test_manual_scirate_sync_enables_human_chrome_assistance(app_client, monkeypatch):

@@ -78,6 +78,10 @@
         <span class="status status-skipped">SerpAPI 未启用</span>
         <p class="muted">此来源已关闭。请先在上方开启 SerpAPI 并保存 API key。</p>
         {% else %}
+        {% if schedule.source == 'journals' %}
+        <span class="status status-success">每天更新</span>
+        <p class="muted">更新计划固定为每天；是否订阅由下方 8 本期刊各自的开关控制。</p>
+        {% else %}
         <form method="post" action="/settings/schedules/{{ schedule.source }}" class="schedule-form" hx-post="/settings/schedules/{{ schedule.source }}" hx-target="#schedule-{{ schedule.source }}" hx-select="#schedule-{{ schedule.source }}" hx-swap="outerHTML">
           {% if schedule.source == 'scholar' %}<input type="hidden" name="enabled" value="on"><p class="muted">启用状态由上方 SerpAPI 开关控制。</p>{% else %}<label><input type="checkbox" name="enabled" {{ 'checked' if schedule.enabled }}> 启用</label>{% endif %}
           {% if schedule.source == 'arxiv' %}
@@ -89,6 +93,7 @@
           <button class="secondary-button" type="submit">保存频率</button>
           {% endif %}
         </form>
+        {% endif %}
         <small>上次成功：{{ (schedule.last_success_at|local_datetime) if schedule.last_success_at else '尚未成功' }}</small>
         <small>下次计划：{{ (schedule.next_due_at|local_datetime) if schedule.next_due_at else '等待安排' }}</small>
         {% if schedule.last_error %}<p class="error">{{ schedule.last_error }}</p>{% endif %}
@@ -135,28 +140,28 @@
   </div>
 
   <section class="settings-section" id="journal-section">
-    <header><p class="eyebrow">JOURNALS</p><h2>期刊来源</h2><p>没有默认订阅。填写期刊名称和官网，程序会发现并验证官方来源、文章类型与物理相关性。</p></header>
-    <section class="settings-card">
-      {% if journal_error %}<p class="error">{{ '发现结果已过期，请重新查找。' if journal_error == 'expired' else journal_error }}</p>{% endif %}
-      <form method="post" action="/settings/journals/discover" class="inline-form journal-form" hx-post="/settings/journals/discover" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML" data-loading-toast="正在查找并验证官方期刊来源…">
-        <label>期刊名称<input name="name" required placeholder="例如 Nature Communications"></label>
-        <label>期刊官网<input name="homepage_url" type="url" required placeholder="https://www.nature.com/ncomms/"></label>
-        <button>查找期刊</button>
-      </form>
-      {% if journal_preview %}
-      <article class="journal-preview" aria-label="期刊发现结果">
-        <h3>{{ journal_preview.name }}</h3>
-        <p><strong>官网：</strong>{{ journal_preview.canonical_domain }} · <strong>范围：</strong>{{ '物理专业期刊' if journal_preview.scope_kind == 'physics' else '综合期刊' }}</p>
-        {% if journal_preview.issn_online or journal_preview.issn_print %}<p><strong>ISSN：</strong>{{ journal_preview.issn_online }}{% if journal_preview.issn_print %} / {{ journal_preview.issn_print }}{% endif %}</p>{% endif %}
-        <p>扫描 {{ journal_preview.scanned_count }} 条；排除非研究 {{ journal_preview.nonresearch_filtered }} 条；排除非物理 {{ journal_preview.nonphysics_filtered }} 条。</p>
-        <ol>{% for paper in journal_preview.papers %}<li><strong>{{ paper.title }}</strong><small>{{ paper.authors or '作者未知' }} · {{ paper.published_at }}</small></li>{% endfor %}</ol>
-        {% for warning in journal_preview.warnings %}<p class="muted">{{ warning }}</p>{% endfor %}
-        <form method="post" action="/settings/journals/confirm" hx-post="/settings/journals/confirm" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML"><input type="hidden" name="token" value="{{ journal_preview.token }}"><button>确认添加</button></form>
-      </article>
-      {% endif %}
+    <header><p class="eyebrow">JOURNALS</p><h2>重点期刊订阅</h2><p>8 本期刊已经内置并使用固定的官方来源。每一本独立控制；关闭后停止后续抓取，但保留已经导入的论文。</p></header>
+    <section class="settings-card journal-catalog-card">
+      <p class="journal-source-note">每天检查开启的期刊。Nature、Science 等综合刊会用 Crossref 摘要补全后，继续沿用当前的原创研究与物理相关性筛选规则。</p>
+      <div class="journal-list" aria-label="内置重点期刊订阅">
       {% for feed in journal_feeds %}
-        <div class="follow-row"><div><strong>{{ feed.name }}</strong><small>{{ feed.homepage_url }}{% if feed.issn_online or feed.issn_print %} · {{ feed.issn_online or feed.issn_print }}{% endif %}</small><small>上次扫描 {{ feed.last_items_seen }} · 导入 {{ feed.last_items_imported }} · 非研究 {{ feed.last_nonresearch_filtered }} · 非物理 {{ feed.last_nonphysics_filtered }}</small></div><form method="post" action="/settings/journals/{{ feed.id }}/delete" hx-post="/settings/journals/{{ feed.id }}/delete" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML"><button class="danger">删除</button></form></div>
-      {% else %}<p class="muted">尚未添加期刊。</p>{% endfor %}
+        <article class="journal-row">
+          <div class="journal-copy">
+            <div class="journal-title-line"><strong>{{ feed.name }}</strong><span class="status {{ 'status-success' if feed.is_active else 'status-skipped' }}">{{ '已订阅' if feed.is_active else '已关闭' }}</span></div>
+            <small>{{ feed.canonical_domain }} · ISSN {{ feed.issn_online or feed.issn_print }}</small>
+            <small>上次扫描 {{ feed.last_items_seen }} · 导入 {{ feed.last_items_imported }} · 排除非研究 {{ feed.last_nonresearch_filtered }} · 排除非物理 {{ feed.last_nonphysics_filtered }}</small>
+            {% if feed.last_error %}<small class="error">上次错误：{{ feed.last_error }}</small>{% endif %}
+          </div>
+          <form method="post" action="/settings/journals/{{ feed.id }}/toggle" class="journal-switch-form" hx-post="/settings/journals/{{ feed.id }}/toggle" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML">
+            <label class="ios-switch">
+              <input type="checkbox" name="enabled" data-auto-submit aria-label="订阅 {{ feed.name }}" {{ 'checked' if feed.is_active }}>
+              <span class="ios-switch-track" aria-hidden="true"></span>
+            </label>
+            <noscript><button type="submit" class="text-button">保存</button></noscript>
+          </form>
+        </article>
+      {% endfor %}
+      </div>
     </section>
   </section>
 

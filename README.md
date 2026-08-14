@@ -1,13 +1,13 @@
 # arXiv Updater
 
-一个只在 Windows 本机运行的个人论文库。它汇集 arXiv、SciRate、Google Scholar 重点作者和用户主动添加的期刊，并每三天生成一次可配置篇数的精选。
+一个只在 Windows 本机运行的个人论文库。它汇集 arXiv、SciRate、Google Scholar 重点作者和 8 本内置重点期刊，并每三天生成一次可配置篇数的精选。
 
 ## 主要功能
 
 - “三天精选”严格从最近三天的候选中选取，默认 66 篇，可在设置中调整为 1–200；候选不足时不会用旧论文补齐。
 - 推荐先用本地 BM25 和来源信号做确定性粗排，再按三天批次调用 DeepSeek 精排；模型不可用时仍会生成本地批次。
 - arXiv 按官方发布节奏分页读取增量，SciRate 保持三日榜前 50，Scholar 默认每 7 天同步全部重点作者，期刊默认每天同步。
-- 新数据库没有默认期刊。添加期刊时只需填写名称和官网，程序会验证公开 HTTPS、发现官方端点并预览原创物理研究论文。
+- 内置 Nature、Nature Physics、Nature Communications、Science、Science Advances、Physical Review Letters、Physical Review X 和 PRX Quantum；设置页可逐刊开关，每天只更新已开启的期刊。
 - 查看 Abstract、打开全文、收藏和“不感兴趣”都会形成偏好信号并永久保护该论文；无互动论文至少保留 9 天。
 - 缺少摘要时只检查已明确关联的 arXiv 或出版社元数据，不做模糊标题搜索，也不调用隐藏的替代 API。
 - 设置页可安全启停 DeepSeek 与 SerpAPI，并可一键更新四个论文来源；最近同步和 API 用量只显示近 7 天、每栏最多 100 条。
