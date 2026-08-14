@@ -49,8 +49,8 @@ def test_all_updates_are_strictly_discovered_time_descending(app_client):
         assert all(not item.reasons for item in ranked)
 
 
-def test_featured_view_uses_persisted_batch_but_all_view_has_no_reasons(app_client):
-    _, session_factory, models = app_client
+def test_featured_view_uses_persisted_batch_without_rendering_reasons(app_client):
+    client, session_factory, models = app_client
     with session_factory() as db:
         plain = _paper(models, "Plain preprint", 1, "arxiv")
         hot = _paper(models, "Hot journal quantum result", 1, "journal", scites=12)
@@ -63,6 +63,11 @@ def test_featured_view_uses_persisted_batch_but_all_view_has_no_reasons(app_clie
         assert featured
         assert all(featured_item.reasons for featured_item in featured)
         assert all(not item.reasons for item in all_items)
+
+    response = client.get("/?view=featured")
+    assert response.status_code == 200
+    assert "推荐理由" not in response.text
+    assert "本地粗排：研究词项、近期性与来源信号" not in response.text
 
 
 def test_scirate_view_is_sorted_by_vote_count(app_client):

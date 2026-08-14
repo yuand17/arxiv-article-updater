@@ -7,7 +7,13 @@ import httpx
 from sqlalchemy import func, select
 
 from arxiv_updater.config import Settings
-from arxiv_updater.services.papers import normalize_doi, normalize_title, upsert_paper
+from arxiv_updater.services.papers import (
+    normalize_author_names,
+    normalize_authors_text,
+    normalize_doi,
+    normalize_title,
+    upsert_paper,
+)
 from arxiv_updater.sources.arxiv import ArxivAdapter, parse_arxiv_feed
 from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.cache import DailyResponseCache
@@ -36,6 +42,13 @@ def test_parse_respects_since():
 def test_normalization():
     assert normalize_title("An Éxample:  Quantum—Paper!") == "an example quantum paper"
     assert normalize_doi("https://doi.org/10.1000/ABC") == "10.1000/abc"
+    assert normalize_author_names(["Alice Example,", " Bob Example "]) == [
+        "Alice Example",
+        "Bob Example",
+    ]
+    assert normalize_authors_text("Alice Example,, Bob Example,") == (
+        "Alice Example, Bob Example"
+    )
 
 
 def test_upsert_is_idempotent(app_client):
@@ -49,6 +62,21 @@ def test_upsert_is_idempotent(app_client):
         assert second.created is False
         assert db.scalar(select(func.count()).select_from(models.Paper)) == 1
         assert db.scalar(select(func.count()).select_from(models.PaperSource)) == 1
+
+
+def test_upsert_repairs_malformed_author_separators(app_client):
+    _, session_factory, _ = app_client
+    candidate = parse_arxiv_feed(FIXTURE.read_text(encoding="utf-8"))[0]
+    with session_factory() as db:
+        first = upsert_paper(db, candidate)
+        first.paper.authors_text = "Alice Example,, Bob Example,"
+        db.commit()
+
+        second = upsert_paper(db, candidate)
+        db.commit()
+
+        assert second.created is False
+        assert second.paper.authors_text == "Alice Example, Bob Example"
 
 
 def test_scholar_upsert_deduplicates_the_same_paper_across_tracked_authors(app_client):

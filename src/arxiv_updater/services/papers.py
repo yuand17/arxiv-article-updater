@@ -9,6 +9,23 @@ from ..datetime_utils import as_utc
 from ..models import Paper, PaperSource, utcnow
 from ..sources import PaperCandidate
 
+_DUPLICATE_AUTHOR_SEPARATOR = re.compile(r",\s*,\s*")
+_TRAILING_AUTHOR_SEPARATOR = re.compile(r",\s*$")
+
+
+def normalize_author_names(authors: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for author in authors:
+        name = author.strip().rstrip(",").rstrip()
+        if name:
+            normalized.append(name)
+    return normalized
+
+
+def normalize_authors_text(value: str) -> str:
+    value = _DUPLICATE_AUTHOR_SEPARATOR.sub(", ", value.strip())
+    return _TRAILING_AUTHOR_SEPARATOR.sub("", value)
+
 
 def normalize_title(value: str) -> str:
     value = unicodedata.normalize("NFKD", value).lower()
@@ -45,7 +62,8 @@ def find_existing_paper(db: Session, candidate: PaperCandidate) -> Paper | None:
         if paper:
             return paper
     normalized = normalize_title(candidate.title)
-    first_author = candidate.authors[0].strip().lower() if candidate.authors else ""
+    candidate_authors = normalize_author_names(candidate.authors)
+    first_author = candidate_authors[0].lower() if candidate_authors else ""
     published_year = candidate.published_at.year if candidate.published_at else None
     conditions = [Paper.normalized_title == normalized, Paper.first_author == first_author]
     if published_year:
@@ -61,8 +79,9 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
     paper = find_existing_paper(db, candidate)
     created = paper is None
     normalized_doi = normalize_doi(candidate.doi)
+    candidate_authors = normalize_author_names(candidate.authors)
+    authors_text = ", ".join(candidate_authors)
     if paper is None:
-        authors_text = ", ".join(candidate.authors)
         abstract = candidate.abstract.strip()
         paper = Paper(
             title=candidate.title.strip(),
@@ -72,7 +91,7 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
             abstract_status="available" if abstract else "missing",
             abstract_checked_at=utcnow() if abstract else None,
             authors_text=authors_text,
-            first_author=candidate.authors[0].strip().lower() if candidate.authors else "",
+            first_author=candidate_authors[0].lower() if candidate_authors else "",
             published_at=candidate.published_at,
             updated_at=candidate.updated_at,
             arxiv_id=candidate.arxiv_id,
@@ -85,6 +104,13 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
         db.add(paper)
         db.flush()
     else:
+        normalized_existing_authors = normalize_authors_text(paper.authors_text)
+        if normalized_existing_authors != paper.authors_text:
+            paper.authors_text = normalized_existing_authors
+            paper.first_author = normalized_existing_authors.partition(",")[0].lower()
+        elif authors_text and not paper.authors_text.strip():
+            paper.authors_text = authors_text
+            paper.first_author = candidate_authors[0].lower()
         if candidate.abstract and not paper.abstract:
             paper.abstract = candidate.abstract.strip()
             paper.abstract_source = candidate.source

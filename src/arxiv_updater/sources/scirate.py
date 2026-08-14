@@ -94,7 +94,7 @@ def parse_scirate_page(content: str) -> list[SciRateRecord]:
                 authors=[
                     author
                     for node in author_nodes
-                    if (author := node.get_text(" ", strip=True))
+                    if (author := node.get_text(" ", strip=True).rstrip(",").rstrip())
                     and not author.lower().startswith("et al")
                 ],
                 abstract=abstract_node.get_text(" ", strip=True) if abstract_node else "",
