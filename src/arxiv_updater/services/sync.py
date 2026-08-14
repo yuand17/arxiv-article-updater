@@ -177,7 +177,7 @@ def _seen_item_blocks(db: Session, candidate: PaperCandidate) -> bool:
     return False
 
 
-def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
+def _sync_journals(db: Session) -> tuple[int, int, list[str], int, int]:
     subscriptions = [
         subscription
         for subscription in ensure_builtin_journals(db)
@@ -185,6 +185,8 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
     ]
     total_seen = total_created = 0
     errors: list[str] = []
+    successful_subscriptions = 0
+    failed_subscriptions = 0
     for subscription in subscriptions:
         subscription.last_attempt_at = utcnow()
         db.commit()
@@ -270,6 +272,7 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
             db.commit()
             total_seen += scanned
             total_created += imported
+            successful_subscriptions += 1
         except Exception as exc:
             db.rollback()
             current = db.get(JournalSubscription, subscription.id)
@@ -278,7 +281,14 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str]]:
                 current.last_attempt_at = utcnow()
                 db.commit()
             errors.append(f"{subscription.name}: {type(exc).__name__}")
-    return total_seen, total_created, errors
+            failed_subscriptions += 1
+    return (
+        total_seen,
+        total_created,
+        errors,
+        successful_subscriptions,
+        failed_subscriptions,
+    )
 
 
 def sync_sources(
@@ -313,11 +323,27 @@ def sync_sources(
             if previous_finished_at
             else datetime.now(UTC) - timedelta(days=14)
         )
+        all_journal_subscriptions_failed = False
+        adapter = None
         try:
             if name == "journals":
-                run.items_seen, run.items_created, journal_errors = _sync_journals(db)
+                (
+                    run.items_seen,
+                    run.items_created,
+                    journal_errors,
+                    successful_subscriptions,
+                    failed_subscriptions,
+                ) = _sync_journals(db)
+                all_journal_subscriptions_failed = (
+                    failed_subscriptions > 0 and successful_subscriptions == 0
+                )
                 if journal_errors:
-                    run.error = "Partial sync: " + "; ".join(journal_errors)
+                    prefix = (
+                        "All journal subscriptions failed: "
+                        if all_journal_subscriptions_failed
+                        else "Partial sync: "
+                    )
+                    run.error = prefix + "; ".join(journal_errors)
                 adapter = None
                 candidates = []
             else:
@@ -370,10 +396,27 @@ def sync_sources(
                             request_count=billed_requests,
                         )
                     )
-            run.status = SyncStatus.SUCCESS
+            run.status = (
+                SyncStatus.FAILED
+                if all_journal_subscriptions_failed
+                else SyncStatus.SUCCESS
+            )
         except Exception as exc:
             db.rollback()
             run = db.get(SyncRun, run.id) or run
+            if (
+                isinstance(adapter, ScholarAdapter)
+                and adapter.search_requests_sent > 0
+            ):
+                billed_requests = _serpapi_billed_requests(adapter)
+                if billed_requests:
+                    db.add(
+                        ApiUsage(
+                            service="serpapi",
+                            operation=SERPAPI_BILLED_OPERATION,
+                            request_count=billed_requests,
+                        )
+                    )
             run.status = SyncStatus.FAILED
             settings = get_settings()
             run.error = redact_sensitive_text(
@@ -388,13 +431,17 @@ def sync_sources(
 
 
 def _serpapi_billed_requests(adapter: ScholarAdapter) -> int:
+    attempted = getattr(adapter, "search_requests_sent", 0)
+    fallback = attempted if isinstance(attempted, int) and attempted > 0 else len(
+        adapter.author_ids
+    )
     before = getattr(adapter, "account_usage_before", None)
     if not isinstance(before, SerpApiAccountUsage):
-        return 0
+        return fallback
     try:
         after = adapter.fetch_account_usage()
     except RuntimeError:
-        return 0
+        return fallback
     usage_delta = max(0, after.this_month_usage - before.this_month_usage)
     remaining_delta = max(0, before.total_searches_left - after.total_searches_left)
     return max(usage_delta, remaining_delta)

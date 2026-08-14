@@ -92,6 +92,20 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
                 page.locator("h2", has_text="Browser-tested quantum paper")
             ).to_be_visible()
             playwright.expect(page.locator("h2 .katex")).to_be_visible()
+            search = page.get_by_label("搜索英文标题或作者", exact=True)
+            search.focus()
+            playwright.expect(page.locator(".search-box")).to_have_css(
+                "outline-style", "solid"
+            )
+            playwright.expect(
+                page.locator('.view-tabs a[aria-current="page"]')
+            ).to_have_count(1)
+            loading = page.locator(".htmx-indicator").first
+            playwright.expect(loading).to_be_hidden()
+            loading.evaluate("element => element.classList.add('htmx-request')")
+            playwright.expect(loading).to_be_visible()
+            loading.evaluate("element => element.classList.remove('htmx-request')")
+            playwright.expect(loading).to_be_hidden()
             page.locator(".interest-button").click()
             playwright.expect(page.locator(".abstract-panel")).to_contain_text(
                 "quantum information"

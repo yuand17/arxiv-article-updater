@@ -10,12 +10,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from .arxiv_schedule import next_arxiv_update_at
 from .config import get_external_service_states, get_settings
 from .datetime_utils import format_local_datetime
-from .db import get_db, init_db
+from .db import SessionLocal, get_db, init_db
 from .external_services import (
     SUPPORTED_SERVICES,
     CredentialStoreError,
@@ -35,7 +36,11 @@ from .models import (
     TrackedAuthor,
     utcnow,
 )
-from .scheduler import DEFAULT_SOURCE_INTERVALS, ensure_source_schedules
+from .scheduler import (
+    DEFAULT_SOURCE_INTERVALS,
+    ensure_source_schedules,
+    recover_stale_sync_runs,
+)
 from .services.abstracts import abstract_needs_enrichment, enrich_paper_abstract_in_background
 from .services.interactions import record_interaction, remove_interaction
 from .services.journal_catalog import ensure_builtin_journals
@@ -68,6 +73,7 @@ TOAST_MESSAGES = {
 ACTIVITY_WINDOW_DAYS = 7
 ACTIVITY_ROW_LIMIT = 100
 LOCAL_WEB_HOSTS = {"127.0.0.1", "localhost", "::1"}
+SAFE_HTTP_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
 
 
 def _add_toast(response: Response, key: str) -> Response:
@@ -98,16 +104,44 @@ def _settings_fragment(
     return RedirectResponse(f"/settings?toast={key}", status_code=303)
 
 
-def _local_form_request_is_trusted(request: Request) -> bool:
-    """Reject browser cross-site posts to credential-changing endpoints."""
+def _local_write_request_is_trusted(request: Request) -> bool:
+    """Reject browser cross-origin writes while allowing non-browser local clients."""
 
-    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+    fetch_site = request.headers.get("Sec-Fetch-Site", "").lower()
+    if fetch_site in {"cross-site", "same-site"}:
         return False
     source = request.headers.get("Origin") or request.headers.get("Referer")
     if not source:
         return True
     try:
-        return urlparse(source).hostname in LOCAL_WEB_HOSTS
+        source_url = urlparse(source)
+        source_port = source_url.port or (443 if source_url.scheme == "https" else 80)
+        request_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        return (
+            source_url.scheme.lower(),
+            source_url.hostname,
+            source_port,
+        ) == (
+            request.url.scheme.lower(),
+            request.url.hostname,
+            request_port,
+        )
+    except ValueError:
+        return False
+
+
+def _trusted_request_host(request: Request, trusted_hosts: set[str]) -> bool:
+    host_header = request.headers.get("Host", "")
+    if host_header == "::1":
+        return True
+    if host_header != host_header.strip():
+        return False
+    try:
+        parsed = urlparse(f"//{host_header}")
+        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            return False
+        port = parsed.port  # Access validates a supplied port number.
+        return parsed.hostname in trusted_hosts and (port is None or port > 0)
     except ValueError:
         return False
 
@@ -128,8 +162,62 @@ def tracked_author_count(paper: Paper) -> int:
     )
 
 
+def display_source_error(value: str | None) -> str:
+    """Turn stored diagnostic details into a safe, actionable UI message."""
+
+    error = (value or "").strip()
+    if not error:
+        return ""
+    lowered = error.casefold()
+    if lowered.startswith("partial sync:"):
+        return "部分期刊暂时未更新；其他期刊已成功，程序会按计划继续检查。"
+    if lowered.startswith("all journal subscriptions failed:"):
+        return "重点期刊暂时无法连接；已保留上次成功数据，程序将在约 6 小时后重试。"
+    if error.startswith("部分来源更新失败："):
+        return "部分来源暂时未更新；其他来源已完成，程序会按计划继续重试。"
+    if "serpapi" in lowered and "未启用" in error:
+        return error
+    if "serpapi" in lowered and any(
+        marker in lowered for marker in ("budget", "quota", "credit")
+    ):
+        return "SerpAPI 本月剩余额度不足；未执行超出额度的作者更新。"
+    if "cloudflare" in lowered or "http 403" in lowered:
+        return "来源的安全验证暂时阻止了访问；已保留上次成功数据，请稍后重试。"
+    if "429" in lowered or "rate limit" in lowered:
+        return "来源请求过于频繁；已保留上次成功数据，程序会自动延后重试。"
+    if any(
+        marker in lowered
+        for marker in (
+            "connecterror",
+            "connecttimeout",
+            "readtimeout",
+            "remoteprotocolerror",
+            "unexpected_eof",
+            "ssl:",
+            "timed out",
+            "timeout",
+        )
+    ):
+        return "网络连接暂时中断；已保留上次成功数据，程序会自动重试，也可稍后手动更新。"
+    if any(
+        marker in lowered
+        for marker in (
+            "runtimeerror",
+            "httpstatuserror",
+            "httperror",
+            "traceback",
+            "exception",
+        )
+    ):
+        return "来源更新失败；已保留上次成功数据，请稍后重试。"
+    return error if any("\u4e00" <= char <= "\u9fff" for char in error) else (
+        "来源更新失败；已保留上次成功数据，请稍后重试。"
+    )
+
+
 templates.env.globals["source_label"] = source_label
 templates.env.globals["tracked_author_count"] = tracked_author_count
+templates.env.globals["display_source_error"] = display_source_error
 
 
 def local_datetime(value: datetime | None, pattern: str = "%Y-%m-%d %H:%M") -> str:
@@ -200,10 +288,16 @@ def settings_context(
     }
 
 
-def create_app(*, with_scheduler: bool = False) -> FastAPI:
+def create_app(
+    *,
+    with_scheduler: bool = False,
+    extra_trusted_hosts: set[str] | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         init_db()
+        with SessionLocal() as db:
+            recover_stale_sync_runs(db)
         scheduler = None
         if with_scheduler:
             from .scheduler import start_scheduler
@@ -216,11 +310,38 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
                 scheduler.shutdown(wait=True)
 
     app = FastAPI(title="arXiv Updater", lifespan=lifespan)
+    trusted_hosts = LOCAL_WEB_HOSTS | (extra_trusted_hosts or set())
+
+    @app.middleware("http")
+    async def enforce_local_web_boundary(request: Request, call_next):
+        if not _trusted_request_host(request, trusted_hosts):
+            return HTMLResponse("无效的 Host 请求", status_code=400)
+        if (
+            request.method.upper() not in SAFE_HTTP_METHODS
+            and not _local_write_request_is_trusted(request)
+        ):
+            return HTMLResponse("已阻止跨站请求", status_code=403)
+        response = await call_next(request)
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "font-src 'self'; img-src 'self' data:; connect-src 'self'; "
+            "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "
+            "form-action 'self'",
+        )
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        return response
+
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
-    @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    @app.get("/health", response_class=JSONResponse)
+    def health(db: DbSession) -> JSONResponse:
+        try:
+            db.execute(select(1))
+        except SQLAlchemyError:
+            return JSONResponse({"status": "error"}, status_code=503)
+        return JSONResponse({"status": "ok"})
 
     @app.get("/", response_class=HTMLResponse)
     def home(
@@ -344,7 +465,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         record_interaction(db, paper_id, InteractionKind.DISMISSED)
         return HTMLResponse("")
 
-    @app.get("/papers/{paper_id}/fulltext")
+    @app.post("/papers/{paper_id}/fulltext")
     def fulltext(paper_id: str, db: DbSession) -> Response:
         paper = db.get(Paper, paper_id)
         if paper is None:
@@ -412,8 +533,6 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         enabled: str | None = Form(None),
         api_key: str = Form(""),
     ) -> Response:
-        if not _local_form_request_is_trusted(request):
-            return HTMLResponse("已阻止跨站设置请求", status_code=403)
         if service not in SUPPORTED_SERVICES:
             return HTMLResponse("未知外部服务", status_code=404)
         service_name = cast(ServiceName, service)
@@ -444,8 +563,6 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
 
     @app.post("/settings/services/{service}/clear")
     def clear_optional_service(request: Request, service: str, db: DbSession) -> Response:
-        if not _local_form_request_is_trusted(request):
-            return HTMLResponse("已阻止跨站设置请求", status_code=403)
         if service not in SUPPORTED_SERVICES:
             return HTMLResponse("未知外部服务", status_code=404)
         service_name = cast(ServiceName, service)
@@ -623,7 +740,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         return JSONResponse(
             {
                 "status": run.status.value,
-                "message": run.error or "",
+                "message": display_source_error(run.error),
                 "items_seen": run.items_seen,
                 "items_created": run.items_created,
             }

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -6,7 +6,13 @@ from sqlalchemy import select
 from arxiv_updater import scheduler as scheduler_module
 from arxiv_updater.arxiv_schedule import next_arxiv_update_at
 from arxiv_updater.config import Settings
-from arxiv_updater.scheduler import _set_next_due, ensure_source_schedules, run_source_update
+from arxiv_updater.scheduler import (
+    STALE_SYNC_RUN_ERROR,
+    _set_next_due,
+    ensure_source_schedules,
+    recover_stale_sync_runs,
+    run_source_update,
+)
 from arxiv_updater.services import sync as sync_module
 from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.scholar import ScholarAdapter, SerpApiAccountUsage
@@ -20,6 +26,39 @@ class _EmptyAdapter:
     def fetch(self, since):
         self.since = since
         return []
+
+
+def test_startup_recovers_only_clearly_stale_running_syncs(app_client):
+    _, session_factory, models = app_client
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+    with session_factory() as db:
+        stale = models.SyncRun(
+            source="journals",
+            status=models.SyncStatus.RUNNING,
+            started_at=now - timedelta(hours=7),
+        )
+        recent = models.SyncRun(
+            source="arxiv",
+            status=models.SyncStatus.RUNNING,
+            started_at=now - timedelta(minutes=30),
+        )
+        db.add_all([stale, recent])
+        db.commit()
+        stale_id = stale.id
+        recent_id = recent.id
+
+        recovered = recover_stale_sync_runs(db, now=now)
+
+        assert recovered == 1
+        db.refresh(stale)
+        db.refresh(recent)
+        assert stale.id == stale_id
+        assert stale.status == models.SyncStatus.FAILED
+        assert stale.finished_at == now.replace(tzinfo=None)
+        assert stale.error == STALE_SYNC_RUN_ERROR
+        assert recent.id == recent_id
+        assert recent.status == models.SyncStatus.RUNNING
+        assert recent.finished_at is None
 
 
 def test_next_arxiv_update_tracks_official_weekdays_and_daylight_saving():
@@ -83,9 +122,9 @@ def test_journal_sync_skips_only_the_individually_disabled_journal(
         assert science is not None
         science.is_active = False
         db.commit()
-        seen, created, errors = sync_module._sync_journals(db)
+        seen, created, errors, succeeded, failed = sync_module._sync_journals(db)
 
-    assert (seen, created, errors) == (0, 0, [])
+    assert (seen, created, errors, succeeded, failed) == (0, 0, [], 7, 0)
     assert "Science" not in fetched
     assert fetched == [
         "Nature",
@@ -96,6 +135,45 @@ def test_journal_sync_skips_only_the_individually_disabled_journal(
         "Physical Review X",
         "PRX Quantum",
     ]
+
+
+@pytest.mark.parametrize(
+    ("journal_result", "expected_success", "expected_status", "expected_delay"),
+    [
+        ((0, 0, ["Nature: RuntimeError"], 0, 8), False, "failed", timedelta(hours=6)),
+        ((5, 2, ["Science: RuntimeError"], 7, 1), True, "success", timedelta(days=1)),
+    ],
+)
+def test_journal_subscription_failures_define_schedule_semantics(
+    app_client,
+    monkeypatch,
+    journal_result,
+    expected_success,
+    expected_status,
+    expected_delay,
+):
+    _, session_factory, models = app_client
+    fixed_now = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(sync_module, "_sync_journals", lambda db: journal_result)
+    monkeypatch.setattr(scheduler_module, "utcnow", lambda: fixed_now)
+
+    with session_factory() as db:
+        assert run_source_update(db, "journals", now=fixed_now) is expected_success
+        schedule = db.get(models.SourceSchedule, "journals")
+        run = db.scalar(
+            select(models.SyncRun)
+            .where(models.SyncRun.source == "journals")
+            .order_by(models.SyncRun.started_at.desc())
+        )
+
+        assert schedule is not None
+        assert run is not None
+        assert run.status.value == expected_status
+        assert schedule.next_due_at == (fixed_now + expected_delay).replace(tzinfo=None)
+        if expected_success:
+            assert run.error == "Partial sync: Science: RuntimeError"
+        else:
+            assert run.error == "All journal subscriptions failed: Nature: RuntimeError"
 
 
 def test_scholar_sync_fails_before_partial_update_when_live_quota_is_insufficient(
@@ -156,6 +234,149 @@ def test_scholar_sync_uses_live_quota_instead_of_inflated_legacy_usage(
 
         assert isinstance(adapter, ScholarAdapter)
         assert adapter.account_usage_before == SerpApiAccountUsage(250, 46, 204)
+
+
+def test_scholar_sync_records_local_billing_when_account_api_is_unavailable(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+
+    def unavailable_account_usage(self):
+        raise RuntimeError("account API unavailable")
+
+    def successful_fetch(self, since=None):
+        self.author_names = {author_id: author_id for author_id in self.author_ids}
+        return []
+
+    monkeypatch.setattr(ScholarAdapter, "fetch_account_usage", unavailable_account_usage)
+    monkeypatch.setattr(ScholarAdapter, "fetch", successful_fetch)
+    monkeypatch.setattr(
+        sync_module,
+        "get_settings",
+        lambda: Settings(serpapi_api_key="test-serpapi-key"),
+    )
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.TrackedAuthor(
+                    scholar_author_id=f"author{index:04d}",
+                    name=f"Author {index}",
+                    profile_url=f"https://scholar.google.com/citations?user=author{index:04d}",
+                )
+                for index in range(2)
+            ]
+        )
+        db.commit()
+
+        run = sync_module.sync_sources(db, "scholar")[0]
+        usage = db.scalars(
+            select(models.ApiUsage).where(
+                models.ApiUsage.service == "serpapi",
+                models.ApiUsage.operation == sync_module.SERPAPI_BILLED_OPERATION,
+            )
+        ).all()
+
+        assert run.status == models.SyncStatus.SUCCESS
+        assert len(usage) == 1
+        assert usage[0].request_count == 2
+
+
+def test_scholar_sync_uses_account_delta_without_double_billing(app_client, monkeypatch):
+    _, session_factory, models = app_client
+    account_results = iter(
+        [
+            SerpApiAccountUsage(250, 10, 240),
+            SerpApiAccountUsage(250, 12, 238),
+        ]
+    )
+    account_calls = 0
+
+    def account_usage(self):
+        nonlocal account_calls
+        account_calls += 1
+        return next(account_results)
+
+    def successful_fetch(self, since=None):
+        self.author_names = {author_id: author_id for author_id in self.author_ids}
+        return []
+
+    monkeypatch.setattr(ScholarAdapter, "fetch_account_usage", account_usage)
+    monkeypatch.setattr(ScholarAdapter, "fetch", successful_fetch)
+    monkeypatch.setattr(
+        sync_module,
+        "get_settings",
+        lambda: Settings(serpapi_api_key="test-serpapi-key"),
+    )
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.TrackedAuthor(
+                    scholar_author_id=f"author{index:04d}",
+                    name=f"Author {index}",
+                    profile_url=f"https://scholar.google.com/citations?user=author{index:04d}",
+                )
+                for index in range(2)
+            ]
+        )
+        db.commit()
+
+        run = sync_module.sync_sources(db, "scholar")[0]
+        usage = db.scalars(
+            select(models.ApiUsage).where(
+                models.ApiUsage.service == "serpapi",
+                models.ApiUsage.operation == sync_module.SERPAPI_BILLED_OPERATION,
+            )
+        ).all()
+
+        assert run.status == models.SyncStatus.SUCCESS
+        assert account_calls == 2
+        assert len(usage) == 1
+        assert usage[0].request_count == 2
+
+
+def test_failed_partial_scholar_sync_records_only_attempted_billed_requests(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+
+    def unavailable_account_usage(self):
+        raise RuntimeError("account API unavailable")
+
+    def partial_fetch(self, since=None):
+        self.search_requests_sent = 1
+        raise RuntimeError("provider interrupted after first author")
+
+    monkeypatch.setattr(ScholarAdapter, "fetch_account_usage", unavailable_account_usage)
+    monkeypatch.setattr(ScholarAdapter, "fetch", partial_fetch)
+    monkeypatch.setattr(
+        sync_module,
+        "get_settings",
+        lambda: Settings(serpapi_api_key="test-serpapi-key"),
+    )
+    with session_factory() as db:
+        db.add_all(
+            [
+                models.TrackedAuthor(
+                    scholar_author_id=f"author{index:04d}",
+                    name=f"Author {index}",
+                    profile_url=f"https://scholar.google.com/citations?user=author{index:04d}",
+                )
+                for index in range(2)
+            ]
+        )
+        db.commit()
+
+        run = sync_module.sync_sources(db, "scholar")[0]
+        usage = db.scalars(
+            select(models.ApiUsage).where(
+                models.ApiUsage.service == "serpapi",
+                models.ApiUsage.operation == sync_module.SERPAPI_BILLED_OPERATION,
+            )
+        ).all()
+
+        assert run.status == models.SyncStatus.FAILED
+        assert len(usage) == 1
+        assert usage[0].request_count == 1
 
 
 def test_scholar_sync_is_skipped_without_an_enabled_serpapi_key(app_client, monkeypatch):

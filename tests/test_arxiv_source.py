@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from sqlalchemy import func, select
 
 from arxiv_updater.config import Settings
@@ -191,6 +192,112 @@ def test_upsert_normalizes_legacy_naive_sqlite_updated_at(app_client):
         assert stored.updated_at == newer.updated_at.replace(tzinfo=None)
 
 
+def test_newer_arxiv_revision_refreshes_authoritative_metadata_and_keeps_interactions(
+    app_client,
+):
+    _, session_factory, models = app_client
+    original = replace(
+        parse_arxiv_feed(FIXTURE.read_text(encoding="utf-8"))[0],
+        metadata={"revision": "v1"},
+    )
+    revised = replace(
+        original,
+        title="Revised Entanglement Growth",
+        authors=["Alice Revised", "Bob Example", "Carol Example"],
+        abstract="A corrected and expanded arXiv abstract.",
+        published_at=original.published_at + timedelta(hours=1),
+        updated_at=original.updated_at + timedelta(days=1),
+        doi="10.1000/revised.2",
+        categories=["quant-ph"],
+        canonical_url="https://arxiv.org/abs/2607.12345v2",
+        pdf_url="https://arxiv.org/pdf/2607.12345v2",
+        metadata={"revision": "v2"},
+    )
+
+    with session_factory() as db:
+        first = upsert_paper(db, original)
+        first.paper.scites_count = 9
+        db.add(
+            models.Interaction(
+                paper_id=first.paper.id,
+                kind=models.InteractionKind.SAVED,
+                weight=3.0,
+            )
+        )
+        db.commit()
+
+        second = upsert_paper(db, revised)
+        db.commit()
+        source = db.scalar(
+            select(models.PaperSource).where(models.PaperSource.paper_id == second.paper.id)
+        )
+
+        assert second.created is False
+        assert second.paper.title == revised.title
+        assert second.paper.normalized_title == normalize_title(revised.title)
+        assert second.paper.authors_text == "Alice Revised, Bob Example, Carol Example"
+        assert second.paper.first_author == "alice revised"
+        assert second.paper.abstract == revised.abstract
+        assert second.paper.abstract_source == "arxiv"
+        assert second.paper.published_at == revised.published_at
+        assert second.paper.updated_at == revised.updated_at
+        assert second.paper.doi == "10.1000/revised.2"
+        assert second.paper.categories == ["quant-ph"]
+        assert second.paper.canonical_url == revised.canonical_url
+        assert second.paper.pdf_url == revised.pdf_url
+        assert second.paper.scites_count == 9
+        assert source is not None
+        assert source.url == revised.canonical_url
+        assert source.metadata_json == {"revision": "v2"}
+        assert db.scalar(
+            select(func.count())
+            .select_from(models.Interaction)
+            .where(models.Interaction.paper_id == second.paper.id)
+        ) == 1
+
+
+def test_older_arxiv_revision_cannot_overwrite_newer_metadata(app_client):
+    _, session_factory, models = app_client
+    old = replace(
+        parse_arxiv_feed(FIXTURE.read_text(encoding="utf-8"))[0],
+        metadata={"revision": "v1"},
+    )
+    current = replace(
+        old,
+        title="Current arXiv title",
+        authors=["Current Author"],
+        abstract="Current arXiv abstract.",
+        updated_at=old.updated_at + timedelta(days=2),
+        doi="10.1000/current.3",
+        categories=["quant-ph"],
+        canonical_url="https://arxiv.org/abs/2607.12345v3",
+        pdf_url="https://arxiv.org/pdf/2607.12345v3",
+        metadata={"revision": "v3"},
+    )
+
+    with session_factory() as db:
+        upsert_paper(db, current)
+        db.commit()
+        result = upsert_paper(db, old)
+        db.commit()
+        source = db.scalar(
+            select(models.PaperSource).where(models.PaperSource.paper_id == result.paper.id)
+        )
+
+        assert result.created is False
+        assert result.paper.title == current.title
+        assert result.paper.authors_text == "Current Author"
+        assert result.paper.abstract == current.abstract
+        assert result.paper.updated_at == current.updated_at.replace(tzinfo=None)
+        assert result.paper.doi == "10.1000/current.3"
+        assert result.paper.categories == ["quant-ph"]
+        assert result.paper.canonical_url == current.canonical_url
+        assert result.paper.pdf_url == current.pdf_url
+        assert source is not None
+        assert source.url == current.canonical_url
+        assert source.metadata_json == {"revision": "v3"}
+
+
 def test_arxiv_adapter_uses_daily_page_cache(tmp_path):
     cache = DailyResponseCache("arxiv-test", tmp_path)
     query = "cat:quant-ph"
@@ -243,6 +350,130 @@ def test_arxiv_adapter_retries_rate_limit(tmp_path, monkeypatch):
 
     assert calls == 2
     assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+
+
+def test_arxiv_adapter_retries_transport_error_and_keeps_three_second_spacing(
+    tmp_path, monkeypatch
+):
+    calls = 0
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING]", request=request)
+        return httpx.Response(200, text=FIXTURE.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.monotonic", monotonic)
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", sleep)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        page_size=1,
+        cache=DailyResponseCache("arxiv-transport-retry-test", tmp_path),
+    )
+
+    papers = adapter.fetch()
+
+    assert calls == 2
+    assert sleeps == [3.0]
+    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "retry_after", "expected_delay"),
+    [(408, "7", 7.0), (503, "999", 30.0)],
+)
+def test_arxiv_adapter_retries_transient_status_and_bounds_retry_after(
+    status_code, retry_after, expected_delay, tmp_path, monkeypatch
+):
+    calls = 0
+    clock = [0.0]
+    sleeps: list[float] = []
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status_code, headers={"Retry-After": retry_after})
+        return httpx.Response(200, text=FIXTURE.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.monotonic", monotonic)
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", sleep)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        page_size=1,
+        cache=DailyResponseCache(f"arxiv-status-{status_code}-test", tmp_path),
+    )
+
+    papers = adapter.fetch()
+
+    assert calls == 2
+    assert sleeps == [expected_delay]
+    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+
+
+def test_arxiv_adapter_does_not_retry_nontransient_403(tmp_path, monkeypatch):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(403)
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        page_size=1,
+        cache=DailyResponseCache("arxiv-no-403-retry-test", tmp_path),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.fetch()
+    assert calls == 1
+
+
+def test_arxiv_adapter_stops_after_three_transport_failures(tmp_path, monkeypatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadError("temporary read failure", request=request)
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        page_size=1,
+        cache=DailyResponseCache("arxiv-transport-exhaustion-test", tmp_path),
+    )
+
+    with pytest.raises(httpx.ReadError):
+        adapter.fetch()
+    assert calls == 3
 
 
 def test_arxiv_adapter_pages_past_five_hundred_until_time_boundary(

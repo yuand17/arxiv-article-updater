@@ -37,8 +37,8 @@ def test_settings_renders_ios_switches_without_returning_secrets(
     assert response.status_code == 200
     assert response.text.count('class="ios-switch"') == 10
     assert response.text.count('data-service-toggle') == 2
-    assert response.text.count('onchange="this.form.requestSubmit()"') == 8
-    assert "data-auto-submit" not in response.text
+    assert response.text.count("data-auto-submit") == 8
+    assert 'onchange="this.form.requestSubmit()"' not in response.text
     assert response.text.count('type="password"') == 2
     assert "Windows 用户的凭据管理器" in response.text
     assert "value=\"test-secret\"" not in response.text

@@ -23,6 +23,8 @@ DEFAULT_SOURCE_INTERVALS = {
 RETRY_DELAY = timedelta(hours=6)
 RATE_LIMIT_RETRY_DELAY = timedelta(minutes=30)
 CHECK_INTERVAL_MINUTES = 5
+STALE_SYNC_RUN_AGE = timedelta(hours=6)
+STALE_SYNC_RUN_ERROR = "上次程序在同步结束前退出；已自动恢复，可重新运行更新。"
 _source_locks = {name: threading.Lock() for name in DEFAULT_SOURCE_INTERVALS}
 
 
@@ -65,6 +67,32 @@ def ensure_source_schedules(db: Session, *, now: datetime | None = None) -> None
             changed = True
     if changed:
         db.commit()
+
+
+def recover_stale_sync_runs(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    stale_after: timedelta = STALE_SYNC_RUN_AGE,
+) -> int:
+    """Close clearly abandoned runs before this process starts its scheduler."""
+
+    aware_now = as_utc(now or utcnow())
+    assert aware_now is not None
+    cutoff = aware_now - stale_after
+    stale_runs = db.scalars(
+        select(SyncRun).where(
+            SyncRun.status == SyncStatus.RUNNING,
+            SyncRun.started_at <= cutoff,
+        )
+    ).all()
+    for run in stale_runs:
+        run.status = SyncStatus.FAILED
+        run.finished_at = aware_now
+        run.error = STALE_SYNC_RUN_ERROR
+    if stale_runs:
+        db.commit()
+    return len(stale_runs)
 
 
 def _set_next_due(

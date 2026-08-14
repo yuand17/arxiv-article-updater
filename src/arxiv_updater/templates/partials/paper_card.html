@@ -18,7 +18,7 @@
       <button class="interest-button" hx-post="/papers/{{ item.paper.id }}/abstract" hx-target="#detail-{{ item.paper.id }}" hx-swap="innerHTML" hx-indicator="#loading-{{ item.paper.id }}">
         查看 Abstract
       </button>
-      <span id="loading-{{ item.paper.id }}" class="htmx-indicator loading">正在打开…</span>
+      <span id="loading-{{ item.paper.id }}" class="htmx-indicator loading" role="status" aria-live="polite" aria-atomic="true">正在打开…</span>
       {% set saved = 'saved' in item.interaction_kinds %}
       {% set paper_id = item.paper.id %}
       {% include "partials/save_button.html" with context %}

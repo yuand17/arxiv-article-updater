@@ -22,6 +22,10 @@ AddressResolver = Callable[[str], list[str]]
 GetAddrInfo = Callable[..., list[tuple[Any, ...]]]
 
 
+class JournalNetworkError(RuntimeError):
+    """A safe, actionable failure while selecting the journal network path."""
+
+
 def _ipv4_addresses(records: list[tuple[Any, ...]]) -> list[str]:
     addresses: list[str] = []
     for record in records:
@@ -217,13 +221,19 @@ _journal_network: JournalNetwork | None = None
 _journal_network_lock = threading.Lock()
 
 
-def get_journal_network() -> JournalNetwork:
+def get_journal_network(probe_hostname: str = "www.nature.com") -> JournalNetwork:
     """Return one thread-safe journal client, with a direct path when Lantern intercepts DNS."""
 
     global _journal_network
     with _journal_network_lock:
+        fake_ip = system_dns_uses_fake_ip(probe_hostname)
         local_address = find_direct_local_address()
-        direct = bool(local_address and system_dns_uses_fake_ip())
+        if fake_ip and not local_address:
+            raise JournalNetworkError(
+                f"Fake-IP DNS detected for {probe_hostname}, "
+                "but no physical network interface is available"
+            )
+        direct = bool(fake_ip)
         expected_local_address = local_address if direct else ""
         if (
             _journal_network is not None

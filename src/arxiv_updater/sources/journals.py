@@ -1,7 +1,9 @@
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import feedparser
 import httpx
@@ -21,6 +23,67 @@ class JournalFeed:
 
 
 DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+JOURNAL_REQUEST_ATTEMPTS = 3
+JOURNAL_RETRY_BASE_SECONDS = 1.0
+JOURNAL_MAX_RETRY_SECONDS = 10.0
+
+
+def _retryable_status(status_code: int) -> bool:
+    return status_code in {408, 429} or status_code >= 500
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    default = JOURNAL_RETRY_BASE_SECONDS * (2**attempt)
+    try:
+        requested = float(response.headers.get("Retry-After", default))
+    except ValueError:
+        requested = default
+    return min(max(requested, 0.0), JOURNAL_MAX_RETRY_SECONDS)
+
+
+def _get_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    params: dict[str, str | int] | None = None,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
+    for attempt in range(JOURNAL_REQUEST_ATTEMPTS):
+        try:
+            response = client.get(url, params=params, headers=headers)
+        except httpx.TransportError:
+            if attempt == JOURNAL_REQUEST_ATTEMPTS - 1:
+                raise
+            time.sleep(
+                min(
+                    JOURNAL_RETRY_BASE_SECONDS * (2**attempt),
+                    JOURNAL_MAX_RETRY_SECONDS,
+                )
+            )
+            continue
+        if _retryable_status(response.status_code):
+            if attempt == JOURNAL_REQUEST_ATTEMPTS - 1:
+                response.raise_for_status()
+            time.sleep(_retry_delay(response, attempt))
+            continue
+        response.raise_for_status()
+        return response
+    raise RuntimeError("Journal request attempts exhausted")
+
+
+def _safe_request_error(journal: JournalFeed, exc: Exception) -> str:
+    prefix = f"{journal.name} {journal.kind}"
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{prefix}: HTTP {exc.response.status_code}"
+    return f"{prefix}: {type(exc).__name__}"
+
+
+def _network_probe_hostname(feeds: list[JournalFeed]) -> str:
+    preferred = next((feed for feed in feeds if feed.kind != "crossref"), None)
+    selected = preferred or (feeds[0] if feeds else None)
+    if selected is None:
+        return "www.nature.com"
+    return urlparse(selected.url).hostname or "www.nature.com"
 
 
 def _clean_html(value: str) -> str:
@@ -203,7 +266,11 @@ class JournalAdapter(SourceAdapter):
         client: httpx.Client | None = None,
     ) -> None:
         self.feeds = feeds if feeds is not None else []
-        self.client = client or get_journal_network().client
+        self.client = (
+            client
+            if client is not None
+            else get_journal_network(_network_probe_hostname(self.feeds)).client
+        )
         self.errors: list[str] = []
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
@@ -221,13 +288,13 @@ class JournalAdapter(SourceAdapter):
                 )
                 continue
             try:
-                response = self.client.get(
+                response = _get_with_retry(
+                    self.client,
                     journal.url,
                     headers={"User-Agent": "arxiv-article-updater/0.1 (research feed reader)"},
                 )
-                response.raise_for_status()
             except httpx.HTTPError as exc:
-                self.errors.append(f"{journal.name}: {type(exc).__name__}")
+                self.errors.append(_safe_request_error(journal, exc))
                 continue
             for candidate in parse_journal_feed(response.text, journal):
                 published = candidate.published_at
@@ -264,15 +331,15 @@ class JournalAdapter(SourceAdapter):
             if since:
                 params["filter"] = f"from-pub-date:{since.date().isoformat()}"
             try:
-                response = self.client.get(
+                response = _get_with_retry(
+                    self.client,
                     journal.url,
                     params=params,
                     headers={"User-Agent": "arxiv-updater/0.2 (mailto:local@localhost)"},
                 )
-                response.raise_for_status()
                 payload = response.json()
             except (httpx.HTTPError, ValueError) as exc:
-                self.errors.append(f"{journal.name}: {type(exc).__name__}")
+                self.errors.append(_safe_request_error(journal, exc))
                 break
             page = parse_crossref_works(payload, journal)
             results.extend(page)

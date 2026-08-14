@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-TEST_DB = Path(tempfile.gettempdir()) / "arxiv-updater-pytest.db"
+TEST_DB = Path(tempfile.gettempdir()) / f"arxiv-updater-pytest-{os.getpid()}.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["SERPAPI_API_KEY"] = ""
@@ -22,5 +22,5 @@ def app_client():
     with db_module.engine.begin() as connection:
         connection.exec_driver_sql("DROP TABLE IF EXISTS alembic_version")
     db_module.Base.metadata.create_all(bind=db_module.engine)
-    with TestClient(web_module.create_app()) as client:
+    with TestClient(web_module.create_app(extra_trusted_hosts={"testserver"})) as client:
         yield client, db_module.SessionLocal, models_module

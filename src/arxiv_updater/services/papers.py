@@ -67,6 +67,45 @@ def _candidate_has_better_abstract(candidate: PaperCandidate, paper: Paper) -> b
     )
 
 
+def _refresh_from_newer_arxiv_revision(
+    paper: Paper,
+    candidate: PaperCandidate,
+    *,
+    normalized_doi: str | None,
+    candidate_authors: list[str],
+) -> None:
+    """Refresh source-owned metadata after a strictly newer arXiv revision."""
+
+    title = candidate.title.strip()
+    if title:
+        paper.title = title
+        paper.normalized_title = normalize_title(title)
+    if candidate_authors:
+        paper.authors_text = ", ".join(candidate_authors)
+        paper.first_author = candidate_authors[0].lower()
+    abstract = candidate.abstract.strip()
+    if abstract:
+        paper.abstract = abstract
+        paper.abstract_source = "arxiv"
+        paper.abstract_match_confidence = None
+        paper.abstract_status = "available"
+        paper.abstract_checked_at = utcnow()
+    if candidate.published_at is not None:
+        paper.published_at = candidate.published_at
+    if candidate.updated_at is not None:
+        paper.updated_at = candidate.updated_at
+    if candidate.arxiv_id:
+        paper.arxiv_id = candidate.arxiv_id
+    if normalized_doi:
+        paper.doi = normalized_doi
+    if candidate.canonical_url:
+        paper.canonical_url = candidate.canonical_url
+    if candidate.pdf_url:
+        paper.pdf_url = candidate.pdf_url
+    if candidate.categories:
+        paper.categories = sorted(set(candidate.categories))
+
+
 def find_existing_paper(db: Session, candidate: PaperCandidate) -> Paper | None:
     if candidate.arxiv_id:
         paper = db.scalar(select(Paper).where(Paper.arxiv_id == candidate.arxiv_id))
@@ -103,6 +142,8 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
     normalized_doi = normalize_doi(candidate.doi)
     candidate_authors = normalize_author_names(candidate.authors)
     authors_text = ", ".join(candidate_authors)
+    candidate_updated_at = as_utc(candidate.updated_at)
+    is_older_arxiv_revision = False
     if paper is None:
         abstract = candidate.abstract.strip()
         paper = Paper(
@@ -126,35 +167,65 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
         db.add(paper)
         db.flush()
     else:
-        normalized_existing_authors = normalize_authors_text(paper.authors_text)
-        if normalized_existing_authors != paper.authors_text:
-            paper.authors_text = normalized_existing_authors
-            paper.first_author = normalized_existing_authors.partition(",")[0].lower()
-        elif authors_text and not paper.authors_text.strip():
-            paper.authors_text = authors_text
-            paper.first_author = candidate_authors[0].lower()
-        if _candidate_has_better_abstract(candidate, paper):
-            paper.abstract = candidate.abstract.strip()
-            paper.abstract_source = _candidate_abstract_source(candidate)
-            paper.abstract_status = "available"
-            paper.abstract_checked_at = utcnow()
+        paper_updated_at = as_utc(paper.updated_at)
+        same_arxiv_identity = (
+            candidate.source == "arxiv"
+            and bool(candidate.arxiv_id)
+            and paper.arxiv_id in {None, candidate.arxiv_id}
+        )
+        is_newer_arxiv_revision = bool(
+            same_arxiv_identity
+            and candidate_updated_at is not None
+            and (paper_updated_at is None or candidate_updated_at > paper_updated_at)
+        )
+        is_older_arxiv_revision = bool(
+            same_arxiv_identity
+            and candidate_updated_at is not None
+            and paper_updated_at is not None
+            and candidate_updated_at < paper_updated_at
+        )
+        if is_newer_arxiv_revision:
+            _refresh_from_newer_arxiv_revision(
+                paper,
+                candidate,
+                normalized_doi=normalized_doi,
+                candidate_authors=candidate_authors,
+            )
+        elif not is_older_arxiv_revision:
+            normalized_existing_authors = normalize_authors_text(paper.authors_text)
+            if normalized_existing_authors != paper.authors_text:
+                paper.authors_text = normalized_existing_authors
+                paper.first_author = normalized_existing_authors.partition(",")[0].lower()
+            elif authors_text and not paper.authors_text.strip():
+                paper.authors_text = authors_text
+                paper.first_author = candidate_authors[0].lower()
+            if _candidate_has_better_abstract(candidate, paper):
+                paper.abstract = candidate.abstract.strip()
+                paper.abstract_source = _candidate_abstract_source(candidate)
+                paper.abstract_status = "available"
+                paper.abstract_checked_at = utcnow()
+            if candidate.arxiv_id and not paper.arxiv_id:
+                paper.arxiv_id = candidate.arxiv_id
+            if normalized_doi and not paper.doi:
+                paper.doi = normalized_doi
+            if candidate.pdf_url and not paper.pdf_url:
+                paper.pdf_url = candidate.pdf_url
+            if candidate.canonical_url and not paper.canonical_url:
+                paper.canonical_url = candidate.canonical_url
+            paper.categories = sorted(set(paper.categories or []) | set(candidate.categories))
+            if candidate_updated_at and (
+                paper_updated_at is None or candidate_updated_at > paper_updated_at
+            ):
+                paper.updated_at = candidate_updated_at
+        else:
+            normalized_existing_authors = normalize_authors_text(paper.authors_text)
+            if normalized_existing_authors != paper.authors_text:
+                paper.authors_text = normalized_existing_authors
+                paper.first_author = normalized_existing_authors.partition(",")[0].lower()
         if candidate.arxiv_id and not paper.arxiv_id:
             paper.arxiv_id = candidate.arxiv_id
-        if normalized_doi and not paper.doi:
-            paper.doi = normalized_doi
         if candidate.scholar_citation_id and not paper.scholar_citation_id:
             paper.scholar_citation_id = candidate.scholar_citation_id
-        if candidate.pdf_url and not paper.pdf_url:
-            paper.pdf_url = candidate.pdf_url
-        if candidate.canonical_url and not paper.canonical_url:
-            paper.canonical_url = candidate.canonical_url
-        paper.categories = sorted(set(paper.categories or []) | set(candidate.categories))
-        candidate_updated_at = as_utc(candidate.updated_at)
-        paper_updated_at = as_utc(paper.updated_at)
-        if candidate_updated_at and (
-            paper_updated_at is None or candidate_updated_at > paper_updated_at
-        ):
-            paper.updated_at = candidate_updated_at
 
     source = db.scalar(
         select(PaperSource).where(
@@ -174,6 +245,7 @@ def upsert_paper(db: Session, candidate: PaperCandidate) -> UpsertResult:
         )
     else:
         source.last_seen_at = utcnow()
-        source.url = candidate.canonical_url or source.url
-        source.metadata_json = candidate.metadata or source.metadata_json
+        if not is_older_arxiv_revision:
+            source.url = candidate.canonical_url or source.url
+            source.metadata_json = candidate.metadata or source.metadata_json
     return UpsertResult(paper=paper, created=created)

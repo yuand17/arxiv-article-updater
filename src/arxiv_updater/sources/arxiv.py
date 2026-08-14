@@ -1,7 +1,8 @@
 import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 import httpx
 from dateutil.parser import isoparse
@@ -15,6 +16,8 @@ ARXIV = "{http://arxiv.org/schemas/atom}"
 ARXIV_ID_PATTERN = re.compile(r"(?:abs/)?([^/]+?)(?:v\d+)?$")
 ARXIV_CACHE_MAX_AGE = timedelta(minutes=5)
 ARXIV_REQUEST_ATTEMPTS = 3
+ARXIV_REQUEST_INTERVAL_SECONDS = 3.0
+ARXIV_RETRY_BASE_SECONDS = 3.0
 ARXIV_MAX_RETRY_AFTER_SECONDS = 30.0
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
 
@@ -22,6 +25,27 @@ ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
 def normalize_arxiv_id(value: str) -> str:
     match = ARXIV_ID_PATTERN.search(value.strip())
     return match.group(1) if match else value.strip()
+
+
+def _retry_after_seconds(response: httpx.Response, default: float) -> float:
+    value = response.headers.get("Retry-After", "").strip()
+    seconds = default
+    if value:
+        try:
+            seconds = float(value)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                seconds = (retry_at - datetime.now(UTC)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                seconds = default
+    return min(max(seconds, 0.0), ARXIV_MAX_RETRY_AFTER_SECONDS)
+
+
+def _retryable_status(status_code: int) -> bool:
+    return status_code in {408, 429} or status_code >= 500
 
 
 def _text(element: ET.Element, name: str) -> str:
@@ -92,6 +116,23 @@ class ArxivAdapter(SourceAdapter):
         self.max_pages = max_pages
         self.cache = cache or DailyResponseCache("arxiv")
         self._last_network_request: float | None = None
+        self._next_network_request_at = 0.0
+
+    def _wait_for_request_slot(self) -> None:
+        delay = self._next_network_request_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        request_started_at = time.monotonic()
+        self._last_network_request = request_started_at
+        self._next_network_request_at = (
+            request_started_at + ARXIV_REQUEST_INTERVAL_SECONDS
+        )
+
+    def _schedule_retry(self, delay: float) -> None:
+        self._next_network_request_at = max(
+            self._next_network_request_at,
+            time.monotonic() + delay,
+        )
 
     def _fetch_page(self, category_query: str, start: int, count: int) -> str:
         cache_key = f"{category_query}|{start}|{count}"
@@ -99,35 +140,43 @@ class ArxivAdapter(SourceAdapter):
         if cached is not None:
             return cached
         for attempt in range(ARXIV_REQUEST_ATTEMPTS):
-            if self._last_network_request is not None:
-                elapsed = time.monotonic() - self._last_network_request
-                if elapsed < 3.0:
-                    time.sleep(3.0 - elapsed)
-            response = self.client.get(
-                ARXIV_QUERY_URL,
-                params={
-                    "search_query": category_query,
-                    "start": start,
-                    "max_results": count,
-                    "sortBy": "submittedDate",
-                    "sortOrder": "descending",
-                },
-                headers={
-                    "User-Agent": (
-                        "arxiv-article-updater/0.1 (research paper discovery; personal use)"
-                    )
-                },
-            )
-            self._last_network_request = time.monotonic()
-            if response.status_code != 429 or attempt == ARXIV_REQUEST_ATTEMPTS - 1:
-                response.raise_for_status()
-                self.cache.put(cache_key, response.text)
-                return response.text
+            self._wait_for_request_slot()
             try:
-                retry_after = float(response.headers.get("Retry-After", "3"))
-            except ValueError:
-                retry_after = 3.0
-            time.sleep(min(max(retry_after, 3.0), ARXIV_MAX_RETRY_AFTER_SECONDS))
+                response = self.client.get(
+                    ARXIV_QUERY_URL,
+                    params={
+                        "search_query": category_query,
+                        "start": start,
+                        "max_results": count,
+                        "sortBy": "submittedDate",
+                        "sortOrder": "descending",
+                    },
+                    headers={
+                        "User-Agent": (
+                            "arxiv-article-updater/0.1 "
+                            "(research paper discovery; personal use)"
+                        )
+                    },
+                )
+            except httpx.TransportError:
+                if attempt == ARXIV_REQUEST_ATTEMPTS - 1:
+                    raise
+                self._schedule_retry(ARXIV_RETRY_BASE_SECONDS * (2**attempt))
+                continue
+
+            if _retryable_status(response.status_code):
+                if attempt == ARXIV_REQUEST_ATTEMPTS - 1:
+                    response.raise_for_status()
+                retry_delay = _retry_after_seconds(
+                    response,
+                    ARXIV_RETRY_BASE_SECONDS * (2**attempt),
+                )
+                self._schedule_retry(retry_delay)
+                continue
+
+            response.raise_for_status()
+            self.cache.put(cache_key, response.text)
+            return response.text
 
         raise RuntimeError("arXiv request attempts exhausted")
 

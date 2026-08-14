@@ -14,7 +14,8 @@ dependencies = [
   "beautifulsoup4>=4.13,<5",
   "fastapi>=0.115,<1",
   "feedparser>=6.0,<7",
-  "httpx>=0.28,<1",
+  "httpcore>=1.0,<1.1",
+  "httpx>=0.28,<0.29",
   "jinja2>=3.1,<4",
   "keyring>=25.6,<26; platform_system == 'Windows'",
   "openai>=1.68,<3",
@@ -33,6 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "build>=1.2,<2",
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
@@ -45,6 +47,10 @@ arxiv-updater = "arxiv_updater.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/arxiv_updater"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"alembic.ini" = "arxiv_updater/alembic.ini"
+"alembic" = "arxiv_updater/alembic"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

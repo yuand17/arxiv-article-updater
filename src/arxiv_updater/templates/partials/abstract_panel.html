@@ -6,7 +6,7 @@
     <p class="muted">暂无摘要。程序只会检查已明确关联的 arXiv 或出版社元数据，不会模糊搜索或编造内容。</p>
   {% endif %}
   <div class="external-links">
-    {% if paper.pdf_url or paper.canonical_url %}<a href="/papers/{{ paper.id }}/fulltext" target="_blank" rel="noopener">阅读全文 ↗</a>{% endif %}
+    {% if paper.pdf_url or paper.canonical_url %}<form method="post" action="/papers/{{ paper.id }}/fulltext" target="_blank"><button type="submit" class="text-button external-link-button">阅读全文 ↗</button></form>{% endif %}
     {% if paper.doi %}<a href="https://doi.org/{{ paper.doi }}" target="_blank" rel="noopener">DOI ↗</a>{% endif %}
   </div>
 </div>

@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$NoStartup
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -33,8 +35,20 @@ function Set-ArxivUpdaterShortcut {
     $shortcut.Save()
 }
 
-Set-ArxivUpdaterShortcut -Path (Join-Path $desktop 'arXiv Updater.lnk') -Arguments "`"$launcher`" --open"
-Set-ArxivUpdaterShortcut -Path (Join-Path $startup 'arXiv Updater Background.lnk') -Arguments "`"$launcher`" --background"
+$desktopLink = Join-Path $desktop 'arXiv Updater.lnk'
+$startupLink = Join-Path $startup 'arXiv Updater Background.lnk'
+Set-ArxivUpdaterShortcut -Path $desktopLink -Arguments "`"$launcher`" --open"
+if ($NoStartup) {
+    if (Test-Path -LiteralPath $startupLink -PathType Leaf) {
+        Remove-Item -LiteralPath $startupLink -Force
+    }
+} else {
+    Set-ArxivUpdaterShortcut -Path $startupLink -Arguments "`"$launcher`" --background"
+}
 
-Write-Output "Created desktop shortcut: $(Join-Path $desktop 'arXiv Updater.lnk')"
-Write-Output "Created login startup shortcut: $(Join-Path $startup 'arXiv Updater Background.lnk')"
+Write-Output "Created desktop shortcut: $desktopLink"
+if ($NoStartup) {
+    Write-Output "Login startup shortcut disabled: $startupLink"
+} else {
+    Write-Output "Created login startup shortcut: $startupLink"
+}

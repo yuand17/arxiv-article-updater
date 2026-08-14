@@ -7,6 +7,14 @@ from sqlalchemy import create_engine, inspect, select
 
 from alembic import command
 from arxiv_updater.config import get_settings
+from arxiv_updater.db import alembic_config_path
+
+
+def test_alembic_config_is_available_to_the_runtime():
+    config_path = alembic_config_path()
+
+    assert config_path.is_file()
+    assert (config_path.parent / "alembic" / "env.py").is_file()
 
 
 def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_path, monkeypatch):
@@ -206,10 +214,8 @@ def test_local_settings_seeds_fixed_journals_and_toggles_each_independently(app_
     assert "成员邀请" not in settings_response.text
     assert "查找期刊" not in settings_response.text
     assert "期刊官网" not in settings_response.text
-    assert settings_response.text.count(
-        'onchange="this.form.requestSubmit()" aria-label="订阅 '
-    ) == 8
-    assert "data-auto-submit" not in settings_response.text
+    assert settings_response.text.count('data-auto-submit aria-label="订阅 ') == 8
+    assert 'onchange="this.form.requestSubmit()"' not in settings_response.text
     arxiv_card = settings_response.text.split('id="schedule-arxiv"', 1)[1].split(
         "</section>", 1
     )[0]
@@ -408,7 +414,7 @@ def test_htmx_manual_sync_exposes_completion_poll_and_failed_status(app_client, 
     assert status.status_code == 200
     assert status.json() == {
         "status": "failed",
-        "message": "simulated source failure",
+        "message": "来源更新失败；已保留上次成功数据，请稍后重试。",
         "items_seen": 0,
         "items_created": 0,
     }

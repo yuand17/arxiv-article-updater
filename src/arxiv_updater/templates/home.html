@@ -16,22 +16,22 @@
       <h1>{{ titles[view][0] }}</h1>
       <p>{{ titles[view][1] }}</p>
     </div>
-    <div class="result-count"><strong>{{ ranked|length }}</strong><span>篇论文</span></div>
+    <div class="result-count"><strong>{{ ranked|length }}</strong><span>当前显示</span></div>
   </section>
 
   <nav class="view-tabs" aria-label="论文来源">
-    <a class="{{ 'active' if view == 'featured' }}" href="/?view=featured">三天精选</a>
-    <a class="{{ 'active' if view == 'all' }}" href="/?view=all">全部更新</a>
-    <a class="{{ 'active' if view == 'authors' }}" href="/?view=authors">重点作者</a>
-    <a class="{{ 'active' if view == 'scirate' }}" href="/?view=scirate">SciRate</a>
-    <a class="{{ 'active' if view == 'arxiv' }}" href="/?view=arxiv">arXiv</a>
-    <a class="{{ 'active' if view == 'journals' }}" href="/?view=journals">重点期刊</a>
-    <a class="{{ 'active' if view == 'saved' }}" href="/?view=saved">收藏</a>
+    <a class="{{ 'active' if view == 'featured' }}" href="/?view=featured" {% if view == 'featured' %}aria-current="page"{% endif %}>三天精选</a>
+    <a class="{{ 'active' if view == 'all' }}" href="/?view=all" {% if view == 'all' %}aria-current="page"{% endif %}>全部更新</a>
+    <a class="{{ 'active' if view == 'authors' }}" href="/?view=authors" {% if view == 'authors' %}aria-current="page"{% endif %}>重点作者</a>
+    <a class="{{ 'active' if view == 'scirate' }}" href="/?view=scirate" {% if view == 'scirate' %}aria-current="page"{% endif %}>SciRate</a>
+    <a class="{{ 'active' if view == 'arxiv' }}" href="/?view=arxiv" {% if view == 'arxiv' %}aria-current="page"{% endif %}>arXiv</a>
+    <a class="{{ 'active' if view == 'journals' }}" href="/?view=journals" {% if view == 'journals' %}aria-current="page"{% endif %}>重点期刊</a>
+    <a class="{{ 'active' if view == 'saved' }}" href="/?view=saved" {% if view == 'saved' %}aria-current="page"{% endif %}>收藏</a>
   </nav>
 
   <form class="filter-bar" method="get" action="/">
     <input type="hidden" name="view" value="{{ view }}">
-    <label class="search-box"><span>⌕</span><input name="q" value="{{ q }}" placeholder="搜索英文标题或作者"></label>
+    <label class="search-box"><span aria-hidden="true">⌕</span><input name="q" value="{{ q }}" aria-label="搜索英文标题或作者" placeholder="搜索英文标题或作者"></label>
     <select name="category" aria-label="按分类筛选">
       <option value="">全部分类</option>
       {% for item in categories %}<option value="{{ item }}" {{ 'selected' if item == category }}>{{ item }}</option>{% endfor %}

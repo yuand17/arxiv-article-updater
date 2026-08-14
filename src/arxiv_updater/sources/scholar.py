@@ -118,6 +118,7 @@ class ScholarAdapter(SourceAdapter):
         self.author_names: dict[str, str] = {}
         self.author_citation_counts: dict[str, int] = {}
         self.account_usage_before: SerpApiAccountUsage | None = None
+        self.search_requests_sent = 0
 
     def fetch_account_usage(self) -> SerpApiAccountUsage:
         """Read the provider's authoritative quota counters without spending a search."""
@@ -152,6 +153,7 @@ class ScholarAdapter(SourceAdapter):
             raise RuntimeError("SERPAPI_API_KEY is not configured")
         results: list[PaperCandidate] = []
         for author_id in self.author_ids:
+            self.search_requests_sent += 1
             response = self.client.get(
                 "https://serpapi.com/search.json",
                 params={

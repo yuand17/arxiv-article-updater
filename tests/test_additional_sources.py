@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -6,7 +7,7 @@ import pytest
 from arxiv_updater.config import Settings
 from arxiv_updater.services.article_classification import classify_journal_candidate
 from arxiv_updater.sources.cache import DailyResponseCache
-from arxiv_updater.sources.journals import JournalFeed, parse_journal_feed
+from arxiv_updater.sources.journals import JournalAdapter, JournalFeed, parse_journal_feed
 from arxiv_updater.sources.scholar import (
     ScholarAdapter,
     SerpApiAccountUsage,
@@ -148,6 +149,7 @@ def test_scholar_fetch_uses_date_sort_and_keeps_only_latest_ten():
 
     assert observed_params["sort"] == "pubdate"
     assert observed_params["num"] == "10"
+    assert adapter.search_requests_sent == 1
     assert [paper.title for paper in papers] == [
         f"Date-sorted paper {index}" for index in range(10)
     ]
@@ -261,3 +263,119 @@ def test_journal_classification_filters_corrections_after_parsing():
     ]
     assert results[0].accepted is True
     assert results[1].is_original_research is False
+
+
+def test_journal_adapter_selects_network_from_primary_feed_hostname(monkeypatch):
+    observed: list[str] = []
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text="<rss/>"))
+    )
+    monkeypatch.setattr(
+        "arxiv_updater.sources.journals.get_journal_network",
+        lambda hostname: observed.append(hostname) or SimpleNamespace(client=client),
+    )
+
+    JournalAdapter(
+        feeds=[
+            JournalFeed(
+                "Science",
+                "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science",
+                "1095-9203",
+            ),
+            JournalFeed(
+                "Science",
+                "https://api.crossref.org/journals/1095-9203/works",
+                "1095-9203",
+                "crossref",
+            ),
+        ]
+    )
+
+    assert observed == ["www.science.org"]
+
+
+def test_journal_adapter_retries_a_transport_failure(monkeypatch):
+    calls = 0
+    rss = (FIXTURES / "journal.rss").read_text(encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("temporary TLS EOF", request=request)
+        return httpx.Response(200, text=rss)
+
+    monkeypatch.setattr("arxiv_updater.sources.journals.time.sleep", lambda _seconds: None)
+    adapter = JournalAdapter(
+        feeds=[JournalFeed("Science", "https://www.science.org/feed", "1095-9203")],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert len(adapter.fetch()) == 2
+    assert calls == 2
+    assert adapter.errors == []
+
+
+@pytest.mark.parametrize("status_code", [408, 429, 503])
+def test_journal_adapter_retries_only_transient_http_statuses(
+    status_code, monkeypatch
+):
+    calls = 0
+    rss = (FIXTURES / "journal.rss").read_text(encoding="utf-8")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status_code, headers={"Retry-After": "0"})
+        return httpx.Response(200, text=rss)
+
+    monkeypatch.setattr("arxiv_updater.sources.journals.time.sleep", lambda _seconds: None)
+    adapter = JournalAdapter(
+        feeds=[JournalFeed("Science", "https://www.science.org/feed", "1095-9203")],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert len(adapter.fetch()) == 2
+    assert calls == 2
+
+
+def test_journal_adapter_does_not_retry_a_cloudflare_403(monkeypatch):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(403, text="sensitive challenge body")
+
+    monkeypatch.setattr("arxiv_updater.sources.journals.time.sleep", lambda _seconds: None)
+    adapter = JournalAdapter(
+        feeds=[JournalFeed("Science", "https://www.science.org/feed", "1095-9203")],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match=r"Science rss: HTTP 403") as caught:
+        adapter.fetch()
+    assert calls == 1
+    assert "sensitive challenge body" not in str(caught.value)
+
+
+def test_journal_adapter_reports_only_the_safe_transport_type(monkeypatch):
+    calls = 0
+    unsafe_detail = "private upstream detail"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError(unsafe_detail, request=request)
+
+    monkeypatch.setattr("arxiv_updater.sources.journals.time.sleep", lambda _seconds: None)
+    adapter = JournalAdapter(
+        feeds=[JournalFeed("Science", "https://www.science.org/feed", "1095-9203")],
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(RuntimeError, match=r"Science rss: ConnectError") as caught:
+        adapter.fetch()
+    assert calls == 3
+    assert unsafe_detail not in str(caught.value)

@@ -72,6 +72,20 @@ def init_db() -> None:
     migrate_database()
 
 
+def alembic_config_path() -> Path:
+    """Locate migration resources in a source checkout or an installed wheel."""
+
+    candidates = (
+        Path.cwd() / "alembic.ini",
+        Path(__file__).resolve().parents[2] / "alembic.ini",
+        Path(__file__).resolve().with_name("alembic.ini"),
+    )
+    config_path = next((path for path in candidates if path.is_file()), candidates[0])
+    if not config_path.is_file():
+        raise RuntimeError(f"Alembic configuration not found: {config_path}")
+    return config_path
+
+
 def migrate_database() -> None:
     """Upgrade the local database, making a restorable copy before a real upgrade."""
     from alembic.config import Config
@@ -80,11 +94,7 @@ def migrate_database() -> None:
 
     from . import models  # noqa: F401
 
-    candidates = [Path.cwd() / "alembic.ini", Path(__file__).resolve().parents[2] / "alembic.ini"]
-    config_path = next((path for path in candidates if path.exists()), candidates[0])
-    if not config_path.exists():
-        raise RuntimeError(f"Alembic configuration not found: {config_path}")
-    config = Config(config_path)
+    config = Config(alembic_config_path())
     tables = set(inspect(engine).get_table_names())
     if tables and "alembic_version" not in tables:
         # This path supports test databases built from current ORM metadata.  Existing user data
