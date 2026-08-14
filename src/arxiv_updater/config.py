@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_model: str = "deepseek-v4-flash"
     llm_thinking_enabled: bool = False
-    llm_monthly_token_budget: int = 5_000_000
+    llm_monthly_token_budget: int = 50_000_000
     source_cache_dir: str = "data/cache"
     scirate_browser_profile_dir: str = "data/chrome/scirate"
     scirate_browser_timeout_seconds: int = Field(default=300, ge=30, le=900)

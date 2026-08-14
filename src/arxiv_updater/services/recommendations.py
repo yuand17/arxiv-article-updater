@@ -32,6 +32,9 @@ from .preferences import PreferenceUnavailableError, check_token_budget, get_pre
 RECOMMENDATION_PROMPT_VERSION = "featured-v2"
 RANKING_VERSION = "bm25-v1"
 RERANK_CHUNK_SIZE = 50
+RERANK_MIN_OUTPUT_TOKENS = 4_000
+RERANK_OUTPUT_TOKENS_PER_PAPER = 200
+RERANK_ABSTRACT_CHAR_LIMIT = 4_000
 TITLE_WEIGHT = 3.0
 ABSTRACT_WEIGHT = 1.0
 BM25_K1 = 1.5
@@ -69,6 +72,21 @@ _generation_lock = threading.Lock()
 class RecommendationUnavailableError(RuntimeError):
     """A generation error that should fall back to local deterministic ranking."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
+class RecommendationOutputTruncatedError(RecommendationUnavailableError):
+    """A length-limited response that should be retried with smaller chunks."""
+
 
 class ModelRecommendation(BaseModel):
     paper_id: str
@@ -87,6 +105,18 @@ class RerankResult:
     model: str
     input_tokens: int = 0
     output_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _AdaptiveRerankOutcome:
+    scores: dict[str, ModelRecommendation]
+    model: str
+    successful: int
+    failed: int
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    errors: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +160,9 @@ class DeepSeekRecommendationProvider(RecommendationProvider):
                         "title": paper.title,
                         "authors": paper.authors_text,
                         "sources": sorted(_source_names(paper)),
-                        "abstract": (paper.abstract or "unavailable")[:2000],
+                        "abstract": (paper.abstract or "unavailable")[
+                            :RERANK_ABSTRACT_CHAR_LIMIT
+                        ],
                     }
                     for paper in papers
                 ],
@@ -154,6 +186,7 @@ class DeepSeekRecommendationProvider(RecommendationProvider):
                     "type": "enabled" if self.settings.llm_thinking_enabled else "disabled"
                 }
             }
+        response = None
         try:
             response = self.client.chat.completions.create(
                 model=self.settings.llm_model,
@@ -170,28 +203,46 @@ class DeepSeekRecommendationProvider(RecommendationProvider):
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=max(1200, len(papers) * 55),
+                max_tokens=max(
+                    RERANK_MIN_OUTPUT_TOKENS,
+                    len(papers) * RERANK_OUTPUT_TOKENS_PER_PAPER,
+                ),
                 extra_body=extra_body,
             )
             choice = response.choices[0]
+            usage = response.usage
+            input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            if choice.finish_reason == "length":
+                raise RecommendationOutputTruncatedError(
+                    "DeepSeek 推荐输出达到长度上限，将自动缩小分组重试",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
             if choice.finish_reason not in {"stop", None}:
                 raise RecommendationUnavailableError(
-                    f"DeepSeek 推荐输出未完成：{choice.finish_reason}"
+                    f"DeepSeek 推荐输出未完成：{choice.finish_reason}",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                 )
             raw = choice.message.content or "{}"
             parsed = ModelRecommendationResponse.model_validate(json.loads(raw))
         except RecommendationUnavailableError:
             raise
         except (AttributeError, IndexError, json.JSONDecodeError, ValidationError) as exc:
-            raise RecommendationUnavailableError("DeepSeek 返回的推荐格式无效") from exc
+            usage = getattr(response, "usage", None)
+            raise RecommendationUnavailableError(
+                "DeepSeek 返回的推荐格式无效",
+                input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            ) from exc
         except Exception as exc:
             raise RecommendationUnavailableError("DeepSeek 推荐排序服务暂时不可用") from exc
-        usage = response.usage
         return RerankResult(
             items=parsed.items,
             model=self.settings.llm_model,
-            input_tokens=int(usage.prompt_tokens if usage else 0),
-            output_tokens=int(usage.completion_tokens if usage else 0),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
 
@@ -422,6 +473,67 @@ def _validated_model_scores(
     return valid
 
 
+def _rerank_chunk_adaptively(
+    provider: RecommendationProvider,
+    preferences: AppPreferences,
+    papers: list[Paper],
+) -> _AdaptiveRerankOutcome:
+    """Rerank one chunk, splitting length-limited responses instead of dropping the chunk."""
+
+    requests = input_tokens = output_tokens = 0
+    last_error = ""
+    for _attempt in range(2):
+        requests += 1
+        try:
+            result = provider.rerank(preferences, papers)
+            input_tokens += result.input_tokens
+            output_tokens += result.output_tokens
+            scores = _validated_model_scores(result, {paper.id for paper in papers})
+            return _AdaptiveRerankOutcome(
+                scores=scores,
+                model=result.model,
+                successful=len(scores),
+                failed=0,
+                requests=requests,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                errors=[],
+            )
+        except RecommendationOutputTruncatedError as exc:
+            input_tokens += exc.input_tokens
+            output_tokens += exc.output_tokens
+            last_error = str(exc)
+            if len(papers) > 1:
+                midpoint = len(papers) // 2
+                left = _rerank_chunk_adaptively(provider, preferences, papers[:midpoint])
+                right = _rerank_chunk_adaptively(provider, preferences, papers[midpoint:])
+                return _AdaptiveRerankOutcome(
+                    scores={**left.scores, **right.scores},
+                    model=right.model or left.model,
+                    successful=left.successful + right.successful,
+                    failed=left.failed + right.failed,
+                    requests=requests + left.requests + right.requests,
+                    input_tokens=input_tokens + left.input_tokens + right.input_tokens,
+                    output_tokens=output_tokens + left.output_tokens + right.output_tokens,
+                    errors=list(dict.fromkeys([*left.errors, *right.errors])),
+                )
+            break
+        except RecommendationUnavailableError as exc:
+            input_tokens += exc.input_tokens
+            output_tokens += exc.output_tokens
+            last_error = str(exc)
+    return _AdaptiveRerankOutcome(
+        scores={},
+        model="",
+        successful=0,
+        failed=len(papers),
+        requests=requests,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        errors=[last_error or "DeepSeek 分组失败"],
+    )
+
+
 def recommendation_is_due(db: Session, *, now: datetime | None = None) -> bool:
     now = now or datetime.now(UTC)
     latest = db.scalar(
@@ -515,26 +627,20 @@ def generate_recommendation_batch(
                 for start in range(0, len(shortlist), RERANK_CHUNK_SIZE):
                     chunk = shortlist[start : start + RERANK_CHUNK_SIZE]
                     papers = [item.paper for item in chunk]
-                    supplied_ids = {paper.id for paper in papers}
-                    chunk_scores: dict[str, ModelRecommendation] | None = None
-                    last_error = ""
-                    for _attempt in range(2):
-                        requests += 1
-                        try:
-                            result = active_provider.rerank(preferences, papers)
-                            chunk_scores = _validated_model_scores(result, supplied_ids)
-                            batch.model = result.model
-                            input_tokens += result.input_tokens
-                            output_tokens += result.output_tokens
-                            break
-                        except RecommendationUnavailableError as exc:
-                            last_error = str(exc)
-                    if chunk_scores is None:
-                        failed += len(chunk)
-                        errors.append(last_error or "DeepSeek 分组失败")
-                    else:
-                        successful += len(chunk_scores)
-                        scores.update(chunk_scores)
+                    outcome = _rerank_chunk_adaptively(
+                        active_provider,
+                        preferences,
+                        papers,
+                    )
+                    scores.update(outcome.scores)
+                    successful += outcome.successful
+                    failed += outcome.failed
+                    requests += outcome.requests
+                    input_tokens += outcome.input_tokens
+                    output_tokens += outcome.output_tokens
+                    errors.extend(outcome.errors)
+                    if outcome.model:
+                        batch.model = outcome.model
             except (PreferenceUnavailableError, RecommendationUnavailableError) as exc:
                 failed = len(shortlist)
                 errors.append(str(exc))

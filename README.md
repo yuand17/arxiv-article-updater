@@ -5,7 +5,7 @@
 ## 主要功能
 
 - “三天精选”严格从最近三天的候选中选取，默认 66 篇，可在设置中调整为 1–200；候选不足时不会用旧论文补齐。
-- 推荐先用本地 BM25 和来源信号做确定性粗排，再按三天批次调用 DeepSeek 精排；模型不可用时仍会生成本地批次。
+- 推荐先用本地 BM25 和来源信号做确定性粗排，再按三天批次调用 DeepSeek 精排；精排输出达到长度上限时会自动拆分批次继续处理，只有模型真正不可用时才回退到本地排序。
 - arXiv 按官方发布节奏分页读取增量；SciRate 保持三日榜前 50；Scholar 默认每 7 天同步重点作者最近发表的 10 篇论文并跨作者去重；期刊每天同步。
 - 内置 Nature、Nature Physics、Nature Communications、Science、Science Advances、Physical Review Letters、Physical Review X 和 PRX Quantum；设置页可逐刊开关。
 - 查看 Abstract、打开全文、收藏和“不感兴趣”都会形成偏好信号并永久保护该论文；无互动论文至少保留 9 天。

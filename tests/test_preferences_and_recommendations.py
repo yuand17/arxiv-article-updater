@@ -1,4 +1,8 @@
+import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
 
 from arxiv_updater.config import Settings
 from arxiv_updater.services.interactions import record_interaction
@@ -10,7 +14,9 @@ from arxiv_updater.services.preferences import (
 )
 from arxiv_updater.services.ranking import rank_papers
 from arxiv_updater.services.recommendations import (
+    DeepSeekRecommendationProvider,
     ModelRecommendation,
+    RecommendationOutputTruncatedError,
     RecommendationProvider,
     RerankResult,
     generate_recommendation_batch,
@@ -76,6 +82,34 @@ class ConcurrentWriteProvider(FakeRecommendationProvider):
             )
             concurrent.commit()
         return super().rerank(preferences, papers)
+
+
+class LengthLimitedRecommendationProvider(RecommendationProvider):
+    def __init__(self, *, maximum_batch_size: int = 25) -> None:
+        self.maximum_batch_size = maximum_batch_size
+        self.calls: list[list[str]] = []
+
+    def rerank(self, preferences, papers) -> RerankResult:
+        self.calls.append([paper.id for paper in papers])
+        if len(papers) > self.maximum_batch_size:
+            raise RecommendationOutputTruncatedError(
+                "length",
+                input_tokens=100,
+                output_tokens=200,
+            )
+        return RerankResult(
+            items=[
+                ModelRecommendation(
+                    paper_id=paper.id,
+                    preference_score=100 - index,
+                    reason=f"匹配 {paper.title}",
+                )
+                for index, paper in enumerate(papers)
+            ],
+            model="split-reranker",
+            input_tokens=30,
+            output_tokens=20,
+        )
 
 
 def _paper(models, index: int, *, days_old: int = 1):
@@ -144,6 +178,137 @@ def test_recommendation_batch_reranks_shortlist_and_keeps_configured_count(app_c
         assert batch.fallback_used is False
         assert len(rank_papers(db, view="featured")) == 17
         assert db.query(models.ApiUsage).filter_by(operation="featured_rerank").count() == 1
+
+
+def test_length_limited_rerank_splits_chunks_without_local_fallback(app_client):
+    _, session_factory, models = app_client
+    provider = LengthLimitedRecommendationProvider()
+    with session_factory() as db:
+        db.add(models.AppPreferences(id=1, manual_interests="quantum", featured_paper_count=17))
+        db.add_all([_paper(models, index) for index in range(55)])
+        db.commit()
+
+        batch = generate_recommendation_batch(
+            db,
+            provider=provider,
+            settings=Settings(deepseek_api_key="test-key"),
+        )
+
+        assert [len(call) for call in provider.calls] == [50, 25, 25, 5]
+        assert batch.rerank_success_count == batch.shortlist_count == 55
+        assert batch.rerank_fallback_count == 0
+        assert batch.fallback_used is False
+        assert batch.error == ""
+        usage = db.query(models.ApiUsage).filter_by(operation="featured_rerank").one()
+        assert usage.request_count == 4
+        assert usage.input_tokens == 190
+        assert usage.output_tokens == 260
+
+
+def test_deepseek_rerank_uses_generous_output_budget_and_more_abstract(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+    captured: dict = {}
+
+    class CapturingCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            prompt = json.loads(kwargs["messages"][1]["content"])
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(
+                            content=json.dumps(
+                                {
+                                    "items": [
+                                        {
+                                            "paper_id": paper["paper_id"],
+                                            "preference_score": 80,
+                                            "confidence": 0.9,
+                                            "reason": "匹配研究偏好",
+                                        }
+                                        for paper in prompt["papers"]
+                                    ]
+                                }
+                            )
+                        ),
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=1_000, completion_tokens=4_000),
+            )
+
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=CapturingCompletions())
+    )
+    monkeypatch.setattr(
+        "arxiv_updater.services.recommendations.OpenAI",
+        lambda **_kwargs: fake_client,
+    )
+    with session_factory() as db:
+        preferences = models.AppPreferences(id=1, manual_interests="quantum")
+        papers = [_paper(models, index) for index in range(50)]
+        papers[0].abstract = "q" * 5_000
+        db.add(preferences)
+        db.add_all(papers)
+        db.commit()
+
+        result = DeepSeekRecommendationProvider(
+            Settings(deepseek_api_key="test-key")
+        ).rerank(preferences, papers)
+
+        prompt = json.loads(captured["messages"][1]["content"])
+        assert captured["max_tokens"] == 10_000
+        assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert len(prompt["papers"][0]["abstract"]) == 4_000
+        assert len(result.items) == 50
+
+
+def test_deepseek_length_response_carries_usage_for_adaptive_split(
+    app_client, monkeypatch
+):
+    _, session_factory, models = app_client
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="length",
+                            message=SimpleNamespace(content="{}"),
+                        )
+                    ],
+                    usage=SimpleNamespace(
+                        prompt_tokens=4_168,
+                        completion_tokens=10_000,
+                    ),
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "arxiv_updater.services.recommendations.OpenAI",
+        lambda **_kwargs: fake_client,
+    )
+    with session_factory() as db:
+        preferences = models.AppPreferences(id=1, manual_interests="quantum")
+        paper = _paper(models, 1)
+        db.add_all([preferences, paper])
+        db.commit()
+
+        with pytest.raises(RecommendationOutputTruncatedError) as captured:
+            DeepSeekRecommendationProvider(
+                Settings(deepseek_api_key="test-key")
+            ).rerank(preferences, [paper])
+
+        assert captured.value.input_tokens == 4_168
+        assert captured.value.output_tokens == 10_000
+
+
+def test_default_monthly_deepseek_budget_is_relaxed(monkeypatch):
+    monkeypatch.delenv("LLM_MONTHLY_TOKEN_BUDGET", raising=False)
+    assert Settings(_env_file=None).llm_monthly_token_budget == 50_000_000
 
 
 def test_missing_deepseek_key_generates_deterministic_fallback_batch(app_client):
