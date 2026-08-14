@@ -150,9 +150,14 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
             nature_toggle = page.get_by_label("订阅 Nature", exact=True)
             playwright.expect(science_toggle).to_be_checked()
             playwright.expect(nature_toggle).to_be_checked()
-            page.locator(
-                'input[aria-label="订阅 Science"] + .ios-switch-track'
-            ).click()
+            with page.expect_response(
+                lambda response: response.request.method == "POST"
+                and "/settings/journals/" in response.url
+            ) as disable_response:
+                page.locator(
+                    'input[aria-label="订阅 Science"] + .ios-switch-track'
+                ).click()
+            assert disable_response.value.ok
             playwright.expect(science_toggle).not_to_be_checked()
             playwright.expect(nature_toggle).to_be_checked()
             playwright.expect(
@@ -161,9 +166,14 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
             page.reload()
             playwright.expect(science_toggle).not_to_be_checked()
             playwright.expect(nature_toggle).to_be_checked()
-            page.locator(
-                'input[aria-label="订阅 Science"] + .ios-switch-track'
-            ).click()
+            with page.expect_response(
+                lambda response: response.request.method == "POST"
+                and "/settings/journals/" in response.url
+            ) as enable_response:
+                page.locator(
+                    'input[aria-label="订阅 Science"] + .ios-switch-track'
+                ).click()
+            assert enable_response.value.ok
             playwright.expect(science_toggle).to_be_checked()
             page.reload()
             playwright.expect(science_toggle).to_be_checked()
