@@ -45,8 +45,6 @@
   document.addEventListener("change", (event) => {
     const toggle = event.target.closest("[data-service-toggle]");
     if (toggle) updateServiceKeyFields(toggle);
-    const autoSubmit = event.target.closest("[data-auto-submit]");
-    if (autoSubmit && autoSubmit.form) autoSubmit.form.requestSubmit();
   });
   document.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-confirm-message]");

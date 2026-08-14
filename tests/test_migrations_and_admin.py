@@ -171,7 +171,19 @@ def test_local_settings_seeds_fixed_journals_and_toggles_each_independently(app_
     assert "成员邀请" not in settings_response.text
     assert "查找期刊" not in settings_response.text
     assert "期刊官网" not in settings_response.text
-    assert settings_response.text.count('data-auto-submit aria-label="订阅 ') == 8
+    assert settings_response.text.count(
+        'onchange="this.form.requestSubmit()" aria-label="订阅 '
+    ) == 8
+    assert "data-auto-submit" not in settings_response.text
+    arxiv_card = settings_response.text.split('id="schedule-arxiv"', 1)[1].split(
+        "</section>", 1
+    )[0]
+    journal_card = settings_response.text.split('id="schedule-journals"', 1)[1].split(
+        "</section>", 1
+    )[0]
+    assert 'name="enabled"' not in arxiv_card
+    assert "保存开关" not in arxiv_card
+    assert "每天更新" not in journal_card
     names = [
         "Nature",
         "Nature Physics",
@@ -218,6 +230,9 @@ def test_local_settings_seeds_fixed_journals_and_toggles_each_independently(app_
         follow_redirects=False,
     )
     assert response.status_code == 303
+    assert response.headers["location"] == (
+        "/settings?toast=journal_subscription_saved"
+    )
     with session_factory() as db:
         science = db.get(models.JournalSubscription, science_id)
         assert science is not None and science.is_active is True

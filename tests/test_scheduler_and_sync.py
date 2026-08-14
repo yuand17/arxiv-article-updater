@@ -46,11 +46,12 @@ def test_successful_arxiv_update_uses_announcement_schedule(app_client):
         assert schedule.next_due_at == datetime(2026, 8, 17, 0, 10)
 
 
-def test_journal_schedule_is_always_enabled_and_daily(app_client):
+@pytest.mark.parametrize("source", ["arxiv", "journals"])
+def test_fixed_source_schedule_is_always_enabled_and_daily(app_client, source):
     _, session_factory, models = app_client
     with session_factory() as db:
         ensure_source_schedules(db)
-        schedule = db.get(models.SourceSchedule, "journals")
+        schedule = db.get(models.SourceSchedule, source)
         assert schedule is not None
         schedule.enabled = False
         schedule.interval_days = 7

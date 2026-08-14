@@ -64,7 +64,7 @@
   </section>
 
   <section class="settings-section">
-    <header><p class="eyebrow">SOURCES</p><h2>来源更新计划</h2><p>arXiv 跟随官方发布时刻；其他来源按独立频率计算。遇到限流 30 分钟后重试，其他失败 6 小时后重试。页面时间为北京时间。</p></header>
+    <header><p class="eyebrow">SOURCES</p><h2>来源更新计划</h2><p>arXiv 跟随官方发布时刻；重点期刊每天检查；其他来源按独立频率计算。遇到限流 30 分钟后重试，其他失败 6 小时后重试。页面时间为北京时间。</p></header>
     <div class="bulk-sync-row">
       <form method="post" action="/settings/sync/all" hx-post="/settings/sync/all" hx-swap="none"><button type="submit">一键更新四个来源</button></form>
       <small>按顺序更新 arXiv、SciRate、Google Scholar 和重点期刊；未启用的 Scholar 会自动跳过。</small>
@@ -79,19 +79,14 @@
         <p class="muted">此来源已关闭。请先在上方开启 SerpAPI 并保存 API key。</p>
         {% else %}
         {% if schedule.source == 'journals' %}
-        <span class="status status-success">每天更新</span>
         <p class="muted">更新计划固定为每天；是否订阅由下方 8 本期刊各自的开关控制。</p>
+        {% elif schedule.source == 'arxiv' %}
+        <p class="muted"><a href="https://info.arxiv.org/help/availability.html" target="_blank" rel="noreferrer">arXiv 官方时间表</a>为美东时间周日至周四 20:00 发布；本应用 10 分钟后抓取（北京时间夏令时周一至周五 08:10，冬令时 09:10）。</p>
         {% else %}
         <form method="post" action="/settings/schedules/{{ schedule.source }}" class="schedule-form" hx-post="/settings/schedules/{{ schedule.source }}" hx-target="#schedule-{{ schedule.source }}" hx-select="#schedule-{{ schedule.source }}" hx-swap="outerHTML">
           {% if schedule.source == 'scholar' %}<input type="hidden" name="enabled" value="on"><p class="muted">启用状态由上方 SerpAPI 开关控制。</p>{% else %}<label><input type="checkbox" name="enabled" {{ 'checked' if schedule.enabled }}> 启用</label>{% endif %}
-          {% if schedule.source == 'arxiv' %}
-          <input name="interval_days" type="hidden" value="1">
-          <p class="muted"><a href="https://info.arxiv.org/help/availability.html" target="_blank" rel="noreferrer">arXiv 官方时间表</a>为美东时间周日至周四 20:00 发布；本应用 10 分钟后抓取（北京时间夏令时周一至周五 08:10，冬令时 09:10）。</p>
-          <button class="secondary-button" type="submit">保存开关</button>
-          {% else %}
           <label>每 <input name="interval_days" type="number" min="1" max="30" value="{{ schedule.interval_days }}"> 天更新</label>
           <button class="secondary-button" type="submit">保存频率</button>
-          {% endif %}
         </form>
         {% endif %}
         <small>上次成功：{{ (schedule.last_success_at|local_datetime) if schedule.last_success_at else '尚未成功' }}</small>
@@ -154,7 +149,7 @@
           </div>
           <form method="post" action="/settings/journals/{{ feed.id }}/toggle" class="journal-switch-form" hx-post="/settings/journals/{{ feed.id }}/toggle" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML">
             <label class="ios-switch">
-              <input type="checkbox" name="enabled" data-auto-submit aria-label="订阅 {{ feed.name }}" {{ 'checked' if feed.is_active }}>
+              <input type="checkbox" name="enabled" onchange="this.form.requestSubmit()" aria-label="订阅 {{ feed.name }}" {{ 'checked' if feed.is_active }}>
               <span class="ios-switch-track" aria-hidden="true"></span>
             </label>
             <noscript><button type="submit" class="text-button">保存</button></noscript>

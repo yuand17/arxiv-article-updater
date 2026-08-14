@@ -145,6 +145,12 @@ def test_local_feed_actions_and_mobile_layout(monkeypatch):
             page.reload()
             playwright.expect(science_toggle).not_to_be_checked()
             playwright.expect(nature_toggle).to_be_checked()
+            page.locator(
+                'input[aria-label="订阅 Science"] + .ios-switch-track'
+            ).click()
+            playwright.expect(science_toggle).to_be_checked()
+            page.reload()
+            playwright.expect(science_toggle).to_be_checked()
 
             sync_panel = page.locator('[aria-label="最近同步历史"]')
             usage_panel = page.locator('[aria-label="API 用量明细"]')

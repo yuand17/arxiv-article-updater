@@ -534,7 +534,7 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
     ) -> Response:
         if source not in DEFAULT_SOURCE_INTERVALS or not 1 <= interval_days <= 30:
             return RedirectResponse("/settings?schedule_error=1", status_code=303)
-        if source == "journals":
+        if source in {"arxiv", "journals"}:
             interval_days = 1
             enabled = "on"
         if source == "scholar" and not get_settings().serpapi_api_key:
@@ -548,7 +548,11 @@ def create_app(*, with_scheduler: bool = False) -> FastAPI:
         schedule = db.get(SourceSchedule, source)
         if schedule:
             schedule.interval_days = interval_days
-            schedule.enabled = True if source in {"scholar", "journals"} else enabled == "on"
+            schedule.enabled = (
+                True
+                if source in {"arxiv", "scholar", "journals"}
+                else enabled == "on"
+            )
             schedule.next_due_at = (
                 next_arxiv_update_at(utcnow())
                 if source == "arxiv"

@@ -53,7 +53,7 @@ def ensure_source_schedules(db: Session, *, now: datetime | None = None) -> None
             schedule.last_error = ""
             schedule.updated_at = now
             changed = True
-        elif source == "journals" and (
+        elif source in {"arxiv", "journals"} and (
             not schedule.enabled or schedule.interval_days != interval_days
         ):
             schedule.enabled = True
