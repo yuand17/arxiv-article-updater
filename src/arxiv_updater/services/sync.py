@@ -177,7 +177,9 @@ def _seen_item_blocks(db: Session, candidate: PaperCandidate) -> bool:
     return False
 
 
-def _sync_journals(db: Session) -> tuple[int, int, list[str], int, int]:
+def _sync_journals(
+    db: Session, *, allow_browser_challenge: bool = False
+) -> tuple[int, int, list[str], int, int]:
     subscriptions = [
         subscription
         for subscription in ensure_builtin_journals(db)
@@ -207,7 +209,10 @@ def _sync_journals(db: Session) -> tuple[int, int, list[str], int, int]:
             if endpoint.kind in {"rss", "atom", "crossref"}
         ]
         try:
-            adapter = JournalAdapter(feeds=feeds)
+            adapter = JournalAdapter(
+                feeds=feeds,
+                allow_browser_challenge=allow_browser_challenge,
+            )
             candidates = adapter.fetch(since)
             scanned = imported = nonresearch = nonphysics = 0
             for candidate in candidates:
@@ -333,7 +338,10 @@ def sync_sources(
                     journal_errors,
                     successful_subscriptions,
                     failed_subscriptions,
-                ) = _sync_journals(db)
+                ) = _sync_journals(
+                    db,
+                    allow_browser_challenge=allow_browser_challenge,
+                )
                 all_journal_subscriptions_failed = (
                     failed_subscriptions > 0 and successful_subscriptions == 0
                 )
@@ -350,7 +358,7 @@ def sync_sources(
                 adapter = _build_adapter(
                     db,
                     name,
-                    allow_browser_challenge=allow_browser_challenge and name == "scirate",
+                    allow_browser_challenge=allow_browser_challenge,
                 )
                 candidates = adapter.fetch(since)
             if isinstance(adapter, SciRateAdapter):

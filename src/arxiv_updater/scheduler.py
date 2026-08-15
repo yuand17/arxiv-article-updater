@@ -146,7 +146,9 @@ def run_source_update(
         run = sync_sources(
             db,
             source,
-            allow_browser_challenge=allow_browser_challenge and source == "scirate",
+            allow_browser_challenge=(
+                allow_browser_challenge and source in {"scirate", "journals"}
+            ),
         )[0]
         succeeded = run.status == SyncStatus.SUCCESS
         current = db.get(SourceSchedule, source) or schedule
@@ -234,7 +236,7 @@ def run_all_source_updates_in_background() -> None:
                 run_source_update(
                     db,
                     source,
-                    allow_browser_challenge=source == "scirate",
+                    allow_browser_challenge=source in {"scirate", "journals"},
                 )
                 run = db.scalar(
                     select(SyncRun)

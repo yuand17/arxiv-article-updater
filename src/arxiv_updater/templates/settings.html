@@ -93,6 +93,7 @@
         <small>下次计划：{{ (schedule.next_due_at|local_datetime) if schedule.next_due_at else '等待安排' }}</small>
         {% if schedule.last_error %}<p class="error">{{ display_source_error(schedule.last_error) }}</p>{% endif %}
         {% if schedule.source == 'scirate' %}<p class="muted">手动更新遇到 Cloudflare 时会打开专用 Chrome，等待您完成人工验证（最长 5 分钟）；定时更新不会弹窗。</p>{% endif %}
+        {% if schedule.source == 'journals' %}<p class="muted">手动更新 Science 或 Science Advances 遇到 Cloudflare 时会打开专用 Chrome，等待您完成人工验证（最长 5 分钟）；定时更新不会弹窗。</p>{% endif %}
         <form method="post" action="/settings/sync/{{ schedule.source }}" hx-post="/settings/sync/{{ schedule.source }}" hx-swap="none"><button class="text-button" aria-label="立即更新 {{ labels[schedule.source] }}">立即更新</button></form>
         {% endif %}
       </section>

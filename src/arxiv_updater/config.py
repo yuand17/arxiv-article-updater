@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     source_cache_dir: str = "data/cache"
     scirate_browser_profile_dir: str = "data/chrome/scirate"
     scirate_browser_timeout_seconds: int = Field(default=300, ge=30, le=900)
+    journal_browser_profile_dir: str = "data/chrome/journals"
+    journal_browser_timeout_seconds: int = Field(default=300, ge=30, le=900)
 
     arxiv_categories: list[str] = Field(
         default_factory=lambda: [
@@ -59,6 +61,7 @@ class Settings(BaseSettings):
         Path("data").mkdir(parents=True, exist_ok=True)
         Path(self.source_cache_dir).mkdir(parents=True, exist_ok=True)
         Path(self.scirate_browser_profile_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.journal_browser_profile_dir).mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

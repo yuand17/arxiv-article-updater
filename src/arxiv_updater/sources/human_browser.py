@@ -11,6 +11,27 @@ from urllib.parse import urlparse
 import httpx
 
 
+def is_cloudflare_challenge(response: httpx.Response) -> bool:
+    """Recognize a Cloudflare browser challenge without exposing its response body."""
+
+    body = response.text.casefold()
+    challenge_header = response.headers.get("cf-mitigated", "").casefold() == "challenge"
+    if challenge_header:
+        return True
+    if response.status_code not in {403, 503}:
+        return False
+    return any(
+        marker in body
+        for marker in (
+            "cloudflare",
+            "security verification",
+            "安全验证",
+            "just a moment",
+            "cf-chl-",
+        )
+    ) or "cloudflare" in response.headers.get("server", "").casefold()
+
+
 def find_chrome_executable() -> Path:
     candidates: list[Path] = []
     command = shutil.which("chrome") or shutil.which("chrome.exe")
@@ -68,7 +89,7 @@ def fetch_page_with_human_chrome(
     *,
     ready_selector: str = "li.paper",
 ) -> str:
-    """Open a dedicated visible Chrome window and wait for a human-cleared paper page."""
+    """Open a dedicated visible Chrome window and wait for human-cleared content."""
 
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -107,7 +128,7 @@ def fetch_page_with_human_chrome(
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                raise RuntimeError("您关闭了 Chrome 验证窗口，SciRate 更新未完成")
+                raise RuntimeError("您关闭了 Chrome 验证窗口，人工验证未完成")
             try:
                 pages = [page for context in browser.contexts for page in context.pages]
                 for page in pages:
@@ -117,7 +138,7 @@ def fetch_page_with_human_chrome(
                         return page.content()
             except PlaywrightError as exc:
                 if process.poll() is not None:
-                    raise RuntimeError("您关闭了 Chrome 验证窗口，SciRate 更新未完成") from exc
+                    raise RuntimeError("您关闭了 Chrome 验证窗口，人工验证未完成") from exc
                 raise RuntimeError("Chrome 验证会话意外中断") from exc
             time.sleep(0.5)
         minutes = max(1, round(timeout_seconds / 60))

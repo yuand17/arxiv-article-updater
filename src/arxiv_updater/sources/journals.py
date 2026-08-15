@@ -1,7 +1,9 @@
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -12,6 +14,7 @@ from dateutil.parser import isoparse, parse
 
 from ..journal_network import get_journal_network
 from .base import PaperCandidate, SourceAdapter
+from .human_browser import fetch_page_with_human_chrome, is_cloudflare_challenge
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +29,18 @@ DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 JOURNAL_REQUEST_ATTEMPTS = 3
 JOURNAL_RETRY_BASE_SECONDS = 1.0
 JOURNAL_MAX_RETRY_SECONDS = 10.0
+BrowserFetcher = Callable[[str, Path, float], str]
+
+
+def fetch_feed_with_human_chrome(url: str, profile: Path, timeout: float) -> str:
+    """Fetch an RSS or Atom document in a visible, human-cleared Chrome session."""
+
+    return fetch_page_with_human_chrome(
+        url,
+        profile,
+        timeout,
+        ready_selector="rss item, feed entry, item, entry",
+    )
 
 
 def _retryable_status(status_code: int) -> bool:
@@ -76,6 +91,10 @@ def _safe_request_error(journal: JournalFeed, exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
         return f"{prefix}: HTTP {exc.response.status_code}"
     return f"{prefix}: {type(exc).__name__}"
+
+
+def _cloudflare_error(journal: JournalFeed, status_code: int) -> str:
+    return f"{journal.name} {journal.kind}: HTTP {status_code} (Cloudflare security verification)"
 
 
 def _network_probe_hostname(feeds: list[JournalFeed]) -> str:
@@ -264,12 +283,30 @@ class JournalAdapter(SourceAdapter):
         self,
         feeds: list[JournalFeed] | None = None,
         client: httpx.Client | None = None,
+        *,
+        allow_browser_challenge: bool = False,
+        browser_fetcher: BrowserFetcher = fetch_feed_with_human_chrome,
+        browser_profile_directory: Path | None = None,
+        browser_timeout_seconds: float | None = None,
     ) -> None:
+        from ..config import get_settings
+
+        settings = get_settings()
         self.feeds = feeds if feeds is not None else []
         self.client = (
             client
             if client is not None
             else get_journal_network(_network_probe_hostname(self.feeds)).client
+        )
+        self.allow_browser_challenge = allow_browser_challenge
+        self.browser_fetcher = browser_fetcher
+        self.browser_profile_directory = browser_profile_directory or Path(
+            settings.journal_browser_profile_dir
+        )
+        self.browser_timeout_seconds = (
+            browser_timeout_seconds
+            if browser_timeout_seconds is not None
+            else float(settings.journal_browser_timeout_seconds)
         )
         self.errors: list[str] = []
 
@@ -294,15 +331,40 @@ class JournalAdapter(SourceAdapter):
                     headers={"User-Agent": "arxiv-article-updater/0.1 (research feed reader)"},
                 )
             except httpx.HTTPError as exc:
+                if isinstance(exc, httpx.HTTPStatusError) and is_cloudflare_challenge(
+                    exc.response
+                ):
+                    if not self.allow_browser_challenge:
+                        self.errors.append(
+                            _cloudflare_error(journal, exc.response.status_code)
+                        )
+                        continue
+                    try:
+                        content = self.browser_fetcher(
+                            journal.url,
+                            self.browser_profile_directory,
+                            self.browser_timeout_seconds,
+                        )
+                    except RuntimeError as browser_exc:
+                        self.errors.append(
+                            f"{journal.name} Chrome 真人验证未完成：{browser_exc}"
+                        )
+                        continue
+                    parsed_candidates = parse_journal_feed(content, journal)
+                    if not parsed_candidates:
+                        self.errors.append(
+                            f"{journal.name} Chrome 真人验证后未返回可识别的期刊条目"
+                        )
+                        continue
+                    primary_candidates.extend(
+                        self._filter_since(parsed_candidates, since)
+                    )
+                    continue
                 self.errors.append(_safe_request_error(journal, exc))
                 continue
-            for candidate in parse_journal_feed(response.text, journal):
-                published = candidate.published_at
-                if published and not published.tzinfo:
-                    published = published.replace(tzinfo=UTC)
-                if since and published and published < since:
-                    continue
-                primary_candidates.append(candidate)
+            primary_candidates.extend(
+                self._filter_since(parse_journal_feed(response.text, journal), since)
+            )
         candidates = (
             _merge_enrichment(primary_candidates, enrichment_candidates)
             if has_primary_feed
@@ -311,6 +373,20 @@ class JournalAdapter(SourceAdapter):
         if not candidates and self.errors:
             raise RuntimeError("; ".join(self.errors))
         return candidates
+
+    @staticmethod
+    def _filter_since(
+        candidates: list[PaperCandidate], since: datetime | None
+    ) -> list[PaperCandidate]:
+        filtered: list[PaperCandidate] = []
+        for candidate in candidates:
+            published = candidate.published_at
+            if published and not published.tzinfo:
+                published = published.replace(tzinfo=UTC)
+            if since and published and published < since:
+                continue
+            filtered.append(candidate)
+        return filtered
 
     def _fetch_crossref(
         self,

@@ -2,6 +2,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select
 
@@ -15,6 +16,28 @@ def test_alembic_config_is_available_to_the_runtime():
 
     assert config_path.is_file()
     assert (config_path.parent / "alembic" / "env.py").is_file()
+
+
+def test_fresh_database_contains_no_personal_library_state(tmp_path, monkeypatch):
+    database_path = tmp_path / "fresh-install.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path.as_posix()}")
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "head")
+        with sqlite3.connect(database_path) as connection:
+            for table in ("papers", "tracked_authors", "interactions", "paper_sources"):
+                assert connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+            preferences = connection.execute(
+                "SELECT manual_interests, profile_summary FROM app_preferences"
+            ).fetchone()
+            assert preferences == ("", "")
+            assert (
+                connection.execute("SELECT COUNT(*) FROM journal_subscriptions").fetchone()[0]
+                == 8
+            )
+    finally:
+        get_settings.cache_clear()
 
 
 def test_single_user_migration_preserves_library_and_removes_account_tables(tmp_path, monkeypatch):
@@ -283,7 +306,10 @@ def test_local_settings_seeds_fixed_journals_and_toggles_each_independently(app_
         assert science is not None and science.is_active is True
 
 
-def test_manual_scirate_sync_enables_human_chrome_assistance(app_client, monkeypatch):
+@pytest.mark.parametrize("source", ["scirate", "journals"])
+def test_manual_protected_source_sync_enables_human_chrome_assistance(
+    app_client, monkeypatch, source
+):
     client, _, _ = app_client
     calls: list[tuple[str, bool]] = []
 
@@ -295,11 +321,11 @@ def test_manual_scirate_sync_enables_human_chrome_assistance(app_client, monkeyp
         record_update,
     )
 
-    response = client.post("/settings/sync/scirate", follow_redirects=False)
+    response = client.post(f"/settings/sync/{source}", follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/settings?sync_started=scirate&toast=sync_started"
-    assert calls == [("scirate", True)]
+    assert response.headers["location"] == f"/settings?sync_started={source}&toast=sync_started"
+    assert calls == [(source, True)]
     page = client.get(response.headers["location"])
     assert 'id="toast-region"' in page.text
     assert "app.js" in page.text

@@ -712,7 +712,7 @@ def create_app(
             background_tasks.add_task(
                 run_source_update_in_background,
                 source,
-                source == "scirate",
+                source in {"scirate", "journals"},
             )
         response = _action_response(request, "sync_started", f"/settings?sync_started={source}")
         if request.headers.get("HX-Request") == "true":

@@ -154,7 +154,11 @@ def test_journal_subscription_failures_define_schedule_semantics(
 ):
     _, session_factory, models = app_client
     fixed_now = datetime(2026, 8, 14, 12, 0, tzinfo=UTC)
-    monkeypatch.setattr(sync_module, "_sync_journals", lambda db: journal_result)
+    monkeypatch.setattr(
+        sync_module,
+        "_sync_journals",
+        lambda db, **_kwargs: journal_result,
+    )
     monkeypatch.setattr(scheduler_module, "utcnow", lambda: fixed_now)
 
     with session_factory() as db:
@@ -419,18 +423,25 @@ def test_source_update_only_enables_browser_challenge_when_explicit(
     app_client, monkeypatch
 ):
     _, session_factory, models = app_client
-    observed: list[bool] = []
+    observed: list[tuple[str, bool]] = []
 
     def fake_sync(db, source, *, allow_browser_challenge=False):
-        observed.append(allow_browser_challenge)
+        observed.append((source, allow_browser_challenge))
         return [models.SyncRun(source=source, status=models.SyncStatus.SUCCESS)]
 
     monkeypatch.setattr(sync_module, "sync_sources", fake_sync)
     with session_factory() as db:
         assert run_source_update(db, "scirate", allow_browser_challenge=True)
         assert run_source_update(db, "scirate")
+        assert run_source_update(db, "journals", allow_browser_challenge=True)
+        assert run_source_update(db, "journals")
 
-    assert observed == [True, False]
+    assert observed == [
+        ("scirate", True),
+        ("scirate", False),
+        ("journals", True),
+        ("journals", False),
+    ]
 
 
 def test_one_click_update_runs_all_sources_and_records_aggregate(
@@ -464,7 +475,7 @@ def test_one_click_update_runs_all_sources_and_records_aggregate(
         ("arxiv", False),
         ("scirate", True),
         ("scholar", False),
-        ("journals", False),
+        ("journals", True),
     ]
     with session_factory() as db:
         aggregate = db.scalar(

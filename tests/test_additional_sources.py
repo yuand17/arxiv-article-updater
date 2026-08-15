@@ -316,6 +316,40 @@ def test_journal_adapter_retries_a_transport_failure(monkeypatch):
     assert adapter.errors == []
 
 
+def test_journal_manual_fetch_uses_human_chrome_after_cloudflare(tmp_path):
+    rss = (FIXTURES / "journal.rss").read_text(encoding="utf-8")
+    calls: list[tuple[str, Path, float]] = []
+
+    def browser_fetcher(url: str, profile: Path, timeout: float) -> str:
+        calls.append((url, profile, timeout))
+        return rss
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                403,
+                headers={"server": "cloudflare", "cf-mitigated": "challenge"},
+                text="Security verification",
+            )
+        )
+    )
+    profile = tmp_path / "journal-chrome-profile"
+    adapter = JournalAdapter(
+        feeds=[JournalFeed("Science", "https://www.science.org/feed", "1095-9203")],
+        client=client,
+        allow_browser_challenge=True,
+        browser_fetcher=browser_fetcher,
+        browser_profile_directory=profile,
+        browser_timeout_seconds=45,
+    )
+
+    candidates = adapter.fetch()
+
+    assert len(candidates) == 2
+    assert calls == [("https://www.science.org/feed", profile, 45)]
+    assert adapter.errors == []
+
+
 @pytest.mark.parametrize("status_code", [408, 429, 503])
 def test_journal_adapter_retries_only_transient_http_statuses(
     status_code, monkeypatch
@@ -346,7 +380,11 @@ def test_journal_adapter_does_not_retry_a_cloudflare_403(monkeypatch):
     def handler(_request: httpx.Request) -> httpx.Response:
         nonlocal calls
         calls += 1
-        return httpx.Response(403, text="sensitive challenge body")
+        return httpx.Response(
+            403,
+            headers={"server": "cloudflare", "cf-mitigated": "challenge"},
+            text="sensitive challenge body",
+        )
 
     monkeypatch.setattr("arxiv_updater.sources.journals.time.sleep", lambda _seconds: None)
     adapter = JournalAdapter(
@@ -354,7 +392,10 @@ def test_journal_adapter_does_not_retry_a_cloudflare_403(monkeypatch):
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    with pytest.raises(RuntimeError, match=r"Science rss: HTTP 403") as caught:
+    with pytest.raises(
+        RuntimeError,
+        match=r"Science rss: HTTP 403 \(Cloudflare security verification\)",
+    ) as caught:
         adapter.fetch()
     assert calls == 1
     assert "sensitive challenge body" not in str(caught.value)

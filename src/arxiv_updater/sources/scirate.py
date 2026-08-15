@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 from .base import PaperCandidate, SourceAdapter
 from .cache import DailyResponseCache
-from .human_browser import fetch_page_with_human_chrome
+from .human_browser import fetch_page_with_human_chrome, is_cloudflare_challenge
 
 SCIRATE_URL = "https://scirate.com/?range=3"
 SCIRATE_PAGE_LIMIT = 50
@@ -136,17 +136,6 @@ class SciRateAdapter(SourceAdapter):
         )
         self.records: list[SciRateRecord] = []
 
-    @staticmethod
-    def _is_cloudflare_challenge(response: httpx.Response) -> bool:
-        body = response.text.lower()
-        return response.status_code == 403 and (
-            response.headers.get("cf-mitigated", "").lower() == "challenge"
-            or "cloudflare" in response.headers.get("server", "").lower()
-            or "cloudflare" in body
-            or "security verification" in body
-            or "安全验证" in body
-        )
-
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
         # SciRate's first three-day page is the site's own vote-sorted top-50 view.
         content = self.cache.get(SCIRATE_URL)
@@ -160,7 +149,7 @@ class SciRateAdapter(SourceAdapter):
                             "User-Agent": "arxiv-article-updater/0.1 (low-frequency research feed)"
                         },
                     )
-                    if self._is_cloudflare_challenge(response):
+                    if is_cloudflare_challenge(response):
                         if self.allow_browser_challenge:
                             try:
                                 content = self.browser_fetcher(
