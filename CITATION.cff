@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use arXiv Updater in your work, please cite it using the metadata below."
+title: "arXiv Updater"
+type: software
+authors:
+  - family-names: "Yuan"
+    given-names: "Dong"
+    alias: "袁冬"
+    affiliation: "Institute for Interdisciplinary Information Sciences, Tsinghua University"
+version: 0.1.0
+date-released: 2026-08-15
+repository-code: "https://github.com/yuand17/arxiv-article-updater"
+url: "https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.1.0"
+license: MIT
+abstract: >-
+  A privacy-first Windows desktop research-paper library that combines arXiv,
+  SciRate, selected Google Scholar authors, and eight built-in journals into a
+  configurable three-day reading list with local ranking and optional DeepSeek
+  reranking.

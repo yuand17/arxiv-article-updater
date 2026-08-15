@@ -1,8 +1,16 @@
 # arXiv Updater
 
-A private, Windows-local research-paper library that brings together arXiv, SciRate, selected Google Scholar authors, and eight built-in journals. It creates a configurable three-day reading list while keeping the database, preferences, credentials, and browsing history on the user's own computer.
+[![CI](https://github.com/yuand17/arxiv-article-updater/actions/workflows/ci.yml/badge.svg)](https://github.com/yuand17/arxiv-article-updater/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/yuand17/arxiv-article-updater)](https://github.com/yuand17/arxiv-article-updater/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一个仅在 Windows 本机运行的私人论文库，汇集 arXiv、SciRate、选定的 Google Scholar 作者和 8 本内置重点期刊。它会生成篇数可配置的三天精选，同时将数据库、偏好、凭据和浏览记录留在用户自己的电脑上。
+A privacy-first, Windows-local research-paper library that brings together arXiv, SciRate, selected Google Scholar authors, and eight built-in journals. It creates a configurable three-day reading list while keeping the database, preferences, credentials, and browsing history on the user's own computer.
+
+一个隐私优先、仅在 Windows 本机运行的论文库，汇集 arXiv、SciRate、选定的 Google Scholar 作者和 8 本内置重点期刊。它会生成篇数可配置的三天精选，同时将数据库、偏好、凭据和浏览记录留在用户自己的电脑上。
+
+**Latest release:** [Download arXiv Updater v0.1.0](https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.1.0)
+
+**最新版本：** [下载 arXiv Updater v0.1.0](https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.1.0)
 
 ## Features / 主要功能
 
@@ -60,7 +68,14 @@ Publisher RSS or Atom feeds define the journal article universe. Crossref may en
 
 ### English
 
-Run the following commands from a fresh clone. The initialization creates a new local database; it does not download or restore another user's library.
+Download and extract **Source code (zip)** from the [latest GitHub Release](https://github.com/yuand17/arxiv-article-updater/releases/latest), then open PowerShell in the extracted directory. Alternatively, clone the repository with Git:
+
+```powershell
+git clone https://github.com/yuand17/arxiv-article-updater.git
+Set-Location arxiv-article-updater
+```
+
+The initialization creates a new local database; it does not download or restore another user's library.
 
 ```powershell
 python -m venv .venv
@@ -80,7 +95,14 @@ Enable optional services from the local Settings page. DeepSeek is optional and 
 
 ### 中文
 
-在全新 clone 的项目根目录运行以下命令。初始化会创建一个新的本地数据库，不会下载或恢复其他用户的论文库。
+从 [GitHub 最新 Release](https://github.com/yuand17/arxiv-article-updater/releases/latest) 下载并解压 **Source code (zip)**，然后在解压后的目录打开 PowerShell。也可以使用 Git clone 仓库：
+
+```powershell
+git clone https://github.com/yuand17/arxiv-article-updater.git
+Set-Location arxiv-article-updater
+```
+
+初始化会创建一个新的本地数据库，不会下载或恢复其他用户的论文库。
 
 ```powershell
 python -m venv .venv
@@ -215,7 +237,14 @@ CI 同时覆盖 Ubuntu 单元与浏览器测试，以及 Windows wheel 初始化
 - [Architecture / 当前架构](docs/architecture.md)
 - [Sources, classification, and scheduling / 来源、分类与调度](docs/sources.md)
 - [Legacy single-user refactor status / 旧单用户改造方案状态](docs/single-user-refactor-plan.md)
+- [v0.1.0 release notes / v0.1.0 发布说明](docs/releases/v0.1.0.md)
 - [Third-party browser resources / 第三方浏览器资源说明](THIRD_PARTY_NOTICES.md)
+
+## Contributing and citation / 贡献与引用
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening an issue or pull request. If this software supports your research, GitHub can generate a citation from [CITATION.cff](CITATION.cff).
+
+欢迎参与贡献。提交 Issue 或 Pull Request 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。如果本软件帮助了你的研究，可以使用 [CITATION.cff](CITATION.cff) 中的信息进行引用。
 
 ## Copyright and attribution / 版权与署名
 
@@ -227,6 +256,8 @@ CI 同时覆盖 Ubuntu 单元与浏览器测试，以及 Windows wheel 初始化
 
 **Programming assistance:** Developed with programming assistance from ChatGPT Codex.
 
+**License:** Released under the [MIT License](LICENSE).
+
 Copyright © 2026 Dong Yuan (袁冬).
 
 ### 中文
@@ -236,5 +267,7 @@ Copyright © 2026 Dong Yuan (袁冬).
 **单位：** Institute for Interdisciplinary Information Sciences, Tsinghua University 清华大学交叉信息研究院
 
 **编程辅助：** 本项目由 ChatGPT Codex 辅助编程。
+
+**许可证：** 本项目按照 [MIT License](LICENSE) 发布。
 
 版权所有 © 2026 Dong Yuan 袁冬。
