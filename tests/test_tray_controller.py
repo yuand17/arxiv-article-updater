@@ -86,3 +86,13 @@ def test_web_service_disables_console_log_config(monkeypatch) -> None:
     controller.server_thread.join(timeout=2)
 
     assert received["log_config"] is None
+
+
+def test_packaged_windows_state_uses_executable_directory(monkeypatch, tmp_path) -> None:
+    launcher = _load_launcher()
+    executable = tmp_path / "arXiv Updater.exe"
+    monkeypatch.delenv(launcher.STATE_DIR_ENV, raising=False)
+    monkeypatch.setattr(launcher.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(launcher.sys, "executable", str(executable))
+
+    assert launcher.application_state_root() == tmp_path.resolve()

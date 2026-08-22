@@ -40,7 +40,7 @@ def test_settings_renders_ios_switches_without_returning_secrets(
     assert response.text.count("data-auto-submit") == 8
     assert 'onchange="this.form.requestSubmit()"' not in response.text
     assert response.text.count('type="password"') == 2
-    assert "Windows 用户的凭据管理器" in response.text
+    assert "Windows 凭据管理器或 macOS Keychain" in response.text
     assert "value=\"test-secret\"" not in response.text
 
 

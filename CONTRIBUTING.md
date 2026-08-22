@@ -15,7 +15,7 @@ Thank you for helping improve arXiv Updater. Bug reports, documentation improvem
 
 ### Development setup
 
-Use Windows 10 or Windows 11 with 64-bit Python 3.12:
+Use Windows 10/11 or macOS 13+ with Python 3.12. The commands below show PowerShell; equivalent POSIX virtual-environment commands work on macOS:
 
 ```powershell
 git clone https://github.com/yuand17/arxiv-article-updater.git
@@ -71,7 +71,7 @@ By submitting a contribution, you agree that it may be distributed under the rep
 
 ### 开发环境
 
-请使用 Windows 10 或 Windows 11，以及 64 位 Python 3.12：
+请使用 Windows 10/11 或 macOS 13 及以上版本，以及 Python 3.12。下面以 PowerShell 为例；macOS 可使用对应的 POSIX 虚拟环境命令：
 
 ```powershell
 git clone https://github.com/yuand17/arxiv-article-updater.git
