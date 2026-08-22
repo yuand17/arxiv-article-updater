@@ -77,7 +77,8 @@ def test_web_service_disables_console_log_config(monkeypatch) -> None:
     monkeypatch.setattr(
         arxiv_updater.web,
         "create_app",
-        lambda *, with_scheduler: object(),
+        lambda *, with_scheduler: received.update(with_scheduler=with_scheduler)
+        or object(),
     )
 
     controller = launcher.TrayController(open_on_start=False)
@@ -86,6 +87,30 @@ def test_web_service_disables_console_log_config(monkeypatch) -> None:
     controller.server_thread.join(timeout=2)
 
     assert received["log_config"] is None
+    assert received["with_scheduler"] is True
+
+
+def test_windows_smoke_service_does_not_start_scheduler(monkeypatch) -> None:
+    launcher = _load_launcher()
+    received: dict[str, object] = {}
+
+    controller = launcher.TrayController(open_on_start=False)
+    monkeypatch.setattr(controller, "_start_ipc", lambda: None)
+    monkeypatch.setattr(
+        controller,
+        "_start_web_service",
+        lambda *, with_scheduler=True: received.update(
+            with_scheduler=with_scheduler,
+        ),
+    )
+    monkeypatch.setattr(controller, "stop", lambda: None)
+    monkeypatch.setattr(controller, "wait_for_shutdown", lambda: None)
+    monkeypatch.setattr(launcher, "TrayController", lambda **_kwargs: controller)
+    monkeypatch.setattr(launcher, "wait_for_health", lambda: True)
+
+    launcher.run_smoke_test()
+
+    assert received["with_scheduler"] is False
 
 
 def test_packaged_windows_state_uses_executable_directory(monkeypatch, tmp_path) -> None:

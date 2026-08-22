@@ -163,7 +163,7 @@ class TrayController:
         )
         self.ipc_thread.start()
 
-    def _start_web_service(self) -> None:
+    def _start_web_service(self, *, with_scheduler: bool = True) -> None:
         import uvicorn
 
         from arxiv_updater.db import init_db
@@ -174,7 +174,7 @@ class TrayController:
         LOGGER.disabled = False
         LOGGER.info("Local database is ready")
         config = uvicorn.Config(
-            create_app(with_scheduler=True),
+            create_app(with_scheduler=with_scheduler),
             host="127.0.0.1",
             port=SERVICE_PORT,
             log_level="info",
@@ -241,7 +241,7 @@ def run_smoke_test() -> None:
     controller = TrayController(open_on_start=False)
     try:
         controller._start_ipc()
-        controller._start_web_service()
+        controller._start_web_service(with_scheduler=False)
         if not wait_for_health():
             raise RuntimeError("packaged service health check timed out")
     finally:
