@@ -4,13 +4,21 @@
 [![Release](https://img.shields.io/github/v/release/yuand17/arxiv-article-updater)](https://github.com/yuand17/arxiv-article-updater/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A privacy-first, Windows-local research-paper library that brings together arXiv, SciRate, selected Google Scholar authors, and eight built-in journals. It creates a configurable three-day reading list while keeping the database, preferences, credentials, and browsing history on the user's own computer.
+A privacy-first Windows and macOS research-paper library that brings together arXiv, SciRate, selected Google Scholar authors, and eight built-in journals. It creates a configurable three-day reading list while keeping the database, preferences, credentials, and browsing history on the user's own computer.
 
-一个隐私优先、仅在 Windows 本机运行的论文库，汇集 arXiv、SciRate、选定的 Google Scholar 作者和 8 本内置重点期刊。它会生成篇数可配置的三天精选，同时将数据库、偏好、凭据和浏览记录留在用户自己的电脑上。
+一个隐私优先、支持 Windows 与 macOS 本机运行的论文库，汇集 arXiv、SciRate、选定的 Google Scholar 作者和 8 本内置重点期刊。它会生成篇数可配置的三天精选，同时将数据库、偏好、凭据和浏览记录留在用户自己的电脑上。
 
-**Latest release:** [Download arXiv Updater v0.1.0](https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.1.0)
+## Downloads / 下载
 
-**最新版本：** [下载 arXiv Updater v0.1.0](https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.1.0)
+| System / 系统 | Download / 下载 | Notes / 说明 |
+| --- | --- | --- |
+| Windows 10/11 x64 | [Windows portable ZIP](https://github.com/yuand17/arxiv-article-updater/releases/latest/download/arXiv-Updater-Windows-x64.zip) | Extract the complete folder before running. / 使用前请完整解压。 |
+| macOS 13+, Apple Silicon | [macOS DMG for M-series Macs](https://github.com/yuand17/arxiv-article-updater/releases/latest/download/arXiv-Updater-macOS-Apple-Silicon.dmg) | M1/M2/M3/M4/M5 and later. / 适用于 M 系列 Mac。 |
+| macOS 13+, Intel | [macOS DMG for Intel Macs](https://github.com/yuand17/arxiv-article-updater/releases/latest/download/arXiv-Updater-macOS-Intel.dmg) | For older Intel-based Macs. / 适用于 Intel Mac。 |
+
+All packaged applications contain Python and the required runtime; Python and Git are not required for ordinary use. Source archives and release notes remain available on the [latest GitHub Release](https://github.com/yuand17/arxiv-article-updater/releases/latest).
+
+所有封装版本都已经包含 Python 和所需运行环境，日常使用无需另行安装 Python 或 Git。源码压缩包和版本说明仍可在 [GitHub 最新 Release](https://github.com/yuand17/arxiv-article-updater/releases/latest) 找到。
 
 ## Features / 主要功能
 
@@ -38,13 +46,13 @@ A privacy-first, Windows-local research-paper library that brings together arXiv
 
 ### English
 
-The application is a single-user FastAPI service bound only to loopback addresses. APScheduler runs independent source schedules, SQLAlchemy and Alembic manage the local SQLite database, and a Windows tray controller owns the normal desktop lifecycle. Recommendation generation combines local ranking with an optional DeepSeek reranker; optional API credentials are resolved from Windows Credential Manager at runtime.
+The application is a single-user FastAPI service bound only to loopback addresses. APScheduler runs independent source schedules, SQLAlchemy and Alembic manage the local SQLite database, and a Windows tray or macOS menu-bar controller owns the normal desktop lifecycle. Recommendation generation combines local ranking with an optional DeepSeek reranker; optional API credentials are resolved from Windows Credential Manager or macOS Keychain at runtime.
 
 Publisher RSS or Atom feeds define the journal article universe. Crossref may enrich matching DOI records but cannot expand that universe. Journal entries are normalized, deduplicated, filtered for original research, and then checked for physics relevance. A failure in one journal does not roll back successful journals or remove previously imported data.
 
 ### 中文
 
-应用是一个只绑定本机回环地址的单用户 FastAPI 服务。APScheduler 独立调度各来源，SQLAlchemy 和 Alembic 管理本地 SQLite 数据库，Windows 托盘控制器负责日常桌面生命周期。推荐流程由本地排序和可选 DeepSeek 精排组成；可选 API 凭据在运行时从 Windows 凭据管理器读取。
+应用是一个只绑定本机回环地址的单用户 FastAPI 服务。APScheduler 独立调度各来源，SQLAlchemy 和 Alembic 管理本地 SQLite 数据库，Windows 托盘或 macOS 菜单栏控制器负责日常桌面生命周期。推荐流程由本地排序和可选 DeepSeek 精排组成；可选 API 凭据在运行时从 Windows 凭据管理器或 macOS Keychain 读取。
 
 期刊的文章集合由出版社官方 RSS 或 Atom 决定。Crossref 只能补充 DOI 已匹配条目的元数据，不能扩大文章集合。期刊条目会依次规范化、去重、筛选原创研究并判断物理相关性。单本期刊失败不会回滚其他成功期刊，也不会删除以前导入的数据。
 
@@ -52,81 +60,56 @@ Publisher RSS or Atom feeds define the journal article universe. Crossref may en
 
 ### English
 
-- Windows 10 or Windows 11.
-- 64-bit Python 3.12.
+- Windows 10/11 x64, or macOS 13 or later on Apple Silicon or Intel.
 - Network access for source updates.
 - Google Chrome only when SciRate, Science, or Science Advances requires a Cloudflare human-verification step.
+- Python 3.12 and Git are required only for source development, not packaged downloads.
 
 ### 中文
 
-- Windows 10 或 Windows 11。
-- 64 位 Python 3.12。
+- Windows 10/11 x64，或 Apple Silicon/Intel 芯片且运行 macOS 13 及以上版本的 Mac。
 - 更新论文来源时需要网络连接。
 - 只有当 SciRate、Science 或 Science Advances 触发 Cloudflare 人工验证时才需要 Google Chrome。
+- 只有从源码开发时才需要 Python 3.12 和 Git，封装下载版本不需要。
 
 ## Installation / 安装
 
-### English
+### Windows
 
-Download and extract **Source code (zip)** from the [latest GitHub Release](https://github.com/yuand17/arxiv-article-updater/releases/latest), then open PowerShell in the extracted directory. Alternatively, clone the repository with Git:
+1. Download the Windows ZIP above and extract the complete folder to a stable location.
+2. Double-click `arXiv Updater.exe`. To create desktop and login-startup shortcuts, right-click `Install arXiv Updater.ps1` and run it with PowerShell.
+3. Use the tray icon to open or quit the reader. The first run creates a new local database; it never downloads another user's library.
 
-```powershell
-git clone https://github.com/yuand17/arxiv-article-updater.git
-Set-Location arxiv-article-updater
-```
+1. 下载上面的 Windows ZIP，并将整个文件夹解压到一个不会随意移动的位置。
+2. 双击 `arXiv Updater.exe`。如需创建桌面和登录自启快捷方式，请右键 `Install arXiv Updater.ps1` 并使用 PowerShell 运行。
+3. 通过托盘图标打开或退出阅读器。首次运行只会新建空的本地数据库，不会下载其他用户的论文库。
 
-The initialization creates a new local database; it does not download or restore another user's library.
+### macOS
 
-```powershell
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-.venv\Scripts\arxiv-updater.exe init-db
-powershell.exe -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1
-```
+1. Select the Apple Silicon or Intel DMG above, open it, and drag **arXiv Updater.app** into **Applications**. Do not run the copy inside the mounted DMG if you want login startup.
+2. This release is **not notarized by Apple**. On first launch, macOS may block it. Open **System Settings → Privacy & Security**, find the message that arXiv Updater was blocked, click **Open Anyway**, and confirm **Open**. You can also Control-click the app in Finder and choose **Open** first; the Privacy & Security approval may still be required.
+3. The application then stays in the macOS menu bar. Choose **Open arXiv Updater** to open the reader, optionally enable **Launch at Login**, and choose **Quit** to stop both the scheduler and local web service.
 
-To omit automatic startup at Windows sign-in:
+1. 根据芯片选择上面的 Apple Silicon 或 Intel DMG，打开后把 **arXiv Updater.app** 拖进 **Applications（应用程序）**。如果需要登录自启，请不要直接运行 DMG 里的副本。
+2. 当前版本**未经 Apple 公证**，用户首次运行时 macOS 可能会阻止启动。请打开 **系统设置 → 隐私与安全性**，找到 arXiv Updater 已被阻止的提示，点击 **仍要打开**，然后再次确认 **打开**。也可以先在 Finder 中按住 Control 点击应用并选择 **打开**；部分系统仍需要到“隐私与安全性”中手动允许。
+3. 启动后程序常驻 macOS 菜单栏。选择 **打开 arXiv Updater** 进入阅读器；可选择 **登录时自动启动**；选择 **退出** 会同时停止调度器和本地 Web 服务。
 
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1 -NoStartup
-```
+Optional services are configured from the local Settings page. DeepSeek falls back to local BM25 when disabled; only Google Scholar author synchronization requires SerpAPI. Secret fields are never echoed, and leaving a field empty preserves the credential in Windows Credential Manager or macOS Keychain.
 
-Enable optional services from the local Settings page. DeepSeek is optional and falls back to local BM25 when disabled. SerpAPI is required only for Google Scholar author synchronization. Secret fields are never echoed back by the page; leaving a field empty preserves its current credential.
-
-### 中文
-
-从 [GitHub 最新 Release](https://github.com/yuand17/arxiv-article-updater/releases/latest) 下载并解压 **Source code (zip)**，然后在解压后的目录打开 PowerShell。也可以使用 Git clone 仓库：
-
-```powershell
-git clone https://github.com/yuand17/arxiv-article-updater.git
-Set-Location arxiv-article-updater
-```
-
-初始化会创建一个新的本地数据库，不会下载或恢复其他用户的论文库。
-
-```powershell
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-.venv\Scripts\arxiv-updater.exe init-db
-powershell.exe -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1
-```
-
-如果不希望登录 Windows 时自动启动：
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File scripts\install_windows_shortcuts.ps1 -NoStartup
-```
-
-可选服务在本机设置页中开启。DeepSeek 关闭时自动回退到本地 BM25；只有 Google Scholar 作者同步需要 SerpAPI。页面不会回显密钥；输入框留空会保留当前凭据。
+可选服务在本机设置页中配置。DeepSeek 关闭时自动回退到本地 BM25；只有 Google Scholar 作者同步需要 SerpAPI。页面不会回显密钥，输入框留空会保留 Windows 凭据管理器或 macOS Keychain 中的现有凭据。
 
 ## Daily use and diagnostics / 日常使用与诊断
 
-### English
+### Packaged applications / 封装版本
 
-- The desktop **arXiv Updater** shortcut starts the tray controller and opens <http://127.0.0.1:8000>. If the application is already running, it only sends an open command.
-- The startup **arXiv Updater Background** shortcut starts the service and tray without opening a browser.
-- Double-click the tray icon to open the reader. Use the tray's **Quit** action to stop the scheduler and Uvicorn cleanly and release the local ports.
+- On Windows, the desktop shortcut starts the tray controller and opens <http://127.0.0.1:8000>. The background shortcut starts without opening a browser. Double-click the tray icon to open the reader.
+- On macOS, the app stays in the menu bar without a Dock icon. Its menu opens the reader, enables or disables login startup, and quits the complete background service.
+- Starting a second copy only asks the existing controller to open the page. Neither platform takes over an unknown process already using port 8000.
+- Windows 本地版通过桌面快捷方式启动托盘并打开网页，通过后台快捷方式静默启动；双击托盘图标可打开阅读器。
+- macOS 版本常驻菜单栏且不显示 Dock 图标；菜单可以打开阅读器、切换登录自启并完整退出后台服务。
+- 重复启动只会通知现有控制器打开页面；两个平台都不会接管占用 8000 端口的未知进程。
+
+### Source diagnostics / 源码诊断
 
 Development and diagnostic commands:
 
@@ -137,32 +120,13 @@ Development and diagnostic commands:
 .venv\Scripts\arxiv-updater.exe migrate-db
 ```
 
-Remove the desktop and startup shortcuts without deleting the database, backups, browser profiles, or credentials:
+Windows source installations can remove their shortcuts without deleting the database, backups, browser profiles, or credentials:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File scripts\uninstall_windows_shortcuts.ps1
 ```
 
-### 中文
-
-- 桌面 **arXiv Updater** 快捷方式会启动托盘控制器并打开 <http://127.0.0.1:8000>；如果应用已经运行，它只发送打开命令。
-- 开机启动目录中的 **arXiv Updater Background** 只启动后台服务和托盘，不自动打开浏览器。
-- 双击托盘图标打开阅读器；使用托盘中的“结束”会让调度器和 Uvicorn 正常退出并释放本地端口。
-
-开发与诊断命令：
-
-```powershell
-.venv\Scripts\arxiv-updater.exe serve
-.venv\Scripts\arxiv-updater.exe sync --source arxiv
-.venv\Scripts\arxiv-updater.exe doctor
-.venv\Scripts\arxiv-updater.exe migrate-db
-```
-
-删除桌面和开机启动快捷方式，但不删除数据库、备份、浏览器档案或凭据：
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File scripts\uninstall_windows_shortcuts.ps1
-```
+Windows 源码安装可以删除桌面和开机启动快捷方式，但不会删除数据库、备份、浏览器档案或凭据。
 
 ## Cloudflare human verification / Cloudflare 人工验证
 
@@ -184,23 +148,23 @@ SciRate 与期刊分别使用 `data/chrome/scirate/` 和 `data/chrome/journals/`
 
 The repository contains application code, migrations, static assets, documentation, synthetic test fixtures, and the fixed eight-journal catalog. A fresh clone contains no API keys, paper database, saved papers, interaction history, research interests, preference profile, tracked Scholar authors, source cache, logs, backups, or Chrome verification profile.
 
-Local state stays in `.env`, `data/`, `*.log`, and Windows Credential Manager. Those filesystem paths are excluded by `.gitignore`; credentials are never written to SQLite, logs, HTML, source code, or Git. Before publishing a change, inspect `git status` and never force-add ignored local-state paths.
+Source installations keep local state in `.env`, `data/`, `*.log`, and the operating-system credential store. The packaged macOS app uses `~/Library/Application Support/arXiv Updater/` plus macOS Keychain; the portable Windows app uses its extracted folder plus Windows Credential Manager. Credentials are never written to SQLite, logs, HTML, source code, or Git.
 
 ### 中文
 
 仓库只包含应用代码、迁移、静态资源、文档、合成测试样例和固定的 8 本期刊目录。全新 clone 不包含 API key、论文数据库、收藏论文、互动历史、研究兴趣、偏好画像、重点 Scholar 作者、来源缓存、日志、备份或 Chrome 验证档案。
 
-本地状态只保存在 `.env`、`data/`、`*.log` 和 Windows 凭据管理器中。这些文件系统路径均由 `.gitignore` 排除；凭据不会写入 SQLite、日志、HTML、源码或 Git。发布改动前应检查 `git status`，不要强制添加被忽略的本地状态路径。
+源码安装的本地状态保存在 `.env`、`data/`、`*.log` 和操作系统凭据存储中。macOS 封装版使用 `~/Library/Application Support/arXiv Updater/` 与 macOS Keychain；Windows 便携版使用解压目录与 Windows 凭据管理器。凭据绝不会写入 SQLite、日志、HTML、源码或 Git。
 
 ## Backup and recovery / 备份与恢复
 
 ### English
 
-Before a database upgrade, the application creates and verifies a SQLite backup under `data/backups/`. To restore one, first quit the tray application, preserve a copy of the current database, and replace `data/arxiv_updater.db` with the selected `.db.bak` file. Reinstall the shortcuts and run `doctor` after moving the project, rebuilding the virtual environment, or restoring a backup.
+Before a database upgrade, the application creates and verifies a SQLite backup under `data/backups/`. To restore one, first quit the tray or menu-bar application, preserve a copy of the current database, and replace `data/arxiv_updater.db` with the selected `.db.bak` file. Reinstall lifecycle shortcuts or login startup after moving an installation.
 
 ### 中文
 
-数据库升级前，程序会在 `data/backups/` 创建并校验 SQLite 备份。恢复时应先退出托盘程序，保留当前数据库副本，再用选定的 `.db.bak` 替换 `data/arxiv_updater.db`。移动项目、重建虚拟环境或恢复备份后，请重新安装快捷方式并运行 `doctor`。
+数据库升级前，程序会在 `data/backups/` 创建并校验 SQLite 备份。恢复时应先退出托盘或菜单栏程序，保留当前数据库副本，再用选定的 `.db.bak` 替换 `data/arxiv_updater.db`。移动安装位置后，请重新设置快捷方式或登录自启。
 
 ## Development verification / 开发验证
 
@@ -216,7 +180,7 @@ Before a database upgrade, the application creates and verifies a SQLite backup 
 git diff --check
 ```
 
-CI covers Ubuntu unit and browser tests plus Windows wheel initialization, tray-controller, and shortcut smoke tests.
+CI covers Ubuntu unit and browser tests, Windows wheel/tray/portable-app checks, and an actual Apple Silicon macOS app-bundle smoke test. Tagged releases additionally build Intel macOS and publish all three downloads.
 
 ### 中文
 
@@ -230,13 +194,14 @@ CI covers Ubuntu unit and browser tests plus Windows wheel initialization, tray-
 git diff --check
 ```
 
-CI 同时覆盖 Ubuntu 单元与浏览器测试，以及 Windows wheel 初始化、托盘控制器和快捷方式 smoke test。
+CI 同时覆盖 Ubuntu 单元与浏览器测试、Windows wheel/托盘/便携版检查，以及真实 Apple Silicon macOS App Bundle 的 smoke test。创建版本标签后还会构建 Intel macOS 版本并发布三个下载文件。
 
 ## Documentation / 文档
 
 - [Architecture / 当前架构](docs/architecture.md)
 - [Sources, classification, and scheduling / 来源、分类与调度](docs/sources.md)
 - [Legacy single-user refactor status / 旧单用户改造方案状态](docs/single-user-refactor-plan.md)
+- [v0.2.0 release notes / v0.2.0 发布说明](docs/releases/v0.2.0.md)
 - [v0.1.0 release notes / v0.1.0 发布说明](docs/releases/v0.1.0.md)
 - [Third-party browser resources / 第三方浏览器资源说明](THIRD_PARTY_NOTICES.md)
 

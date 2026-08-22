@@ -1,4 +1,4 @@
-"""Secure, per-Windows-user configuration for optional external services."""
+"""Secure per-user configuration for optional external services."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Literal, Protocol, cast
 def _load_keyring_module() -> ModuleType | None:
     try:
         return importlib.import_module("keyring")
-    except ImportError:  # pragma: no cover - keyring is installed only on Windows
+    except ImportError:  # pragma: no cover - keyring is installed on desktop platforms
         return None
 
 
@@ -182,7 +182,7 @@ def save_external_service(
     except CredentialValidationError:
         raise
     except Exception as exc:
-        raise CredentialStoreError("无法写入 Windows 凭据管理器，请稍后重试。") from exc
+        raise CredentialStoreError("无法写入系统安全凭据存储，请稍后重试。") from exc
     return ExternalServiceState(
         service=service,
         requested_enabled=enabled,
@@ -206,7 +206,7 @@ def clear_external_service(
         )
         active_backend.set_password(CREDENTIAL_SERVICE_NAME, service, payload)
     except Exception as exc:
-        raise CredentialStoreError("无法写入 Windows 凭据管理器，请稍后重试。") from exc
+        raise CredentialStoreError("无法写入系统安全凭据存储，请稍后重试。") from exc
     return ExternalServiceState(
         service=service,
         requested_enabled=False,

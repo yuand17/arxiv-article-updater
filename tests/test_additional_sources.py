@@ -6,6 +6,7 @@ import pytest
 
 from arxiv_updater.config import Settings
 from arxiv_updater.services.article_classification import classify_journal_candidate
+from arxiv_updater.sources import human_browser
 from arxiv_updater.sources.cache import DailyResponseCache
 from arxiv_updater.sources.journals import JournalAdapter, JournalFeed, parse_journal_feed
 from arxiv_updater.sources.scholar import (
@@ -18,6 +19,26 @@ from arxiv_updater.sources.scholar import (
 from arxiv_updater.sources.scirate import SciRateAdapter, parse_scirate_page
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_chrome_discovery_supports_standard_macos_user_install(tmp_path, monkeypatch):
+    chrome = (
+        tmp_path
+        / "Applications"
+        / "Google Chrome.app"
+        / "Contents"
+        / "MacOS"
+        / "Google Chrome"
+    )
+    chrome.parent.mkdir(parents=True)
+    chrome.touch()
+    monkeypatch.setattr(human_browser.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(human_browser.sys, "platform", "darwin")
+    monkeypatch.setattr(human_browser.Path, "home", lambda: tmp_path)
+    for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        monkeypatch.delenv(variable, raising=False)
+
+    assert human_browser.find_chrome_executable() == chrome.resolve()
 
 
 def test_parse_scholar_author_id():

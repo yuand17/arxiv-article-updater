@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arxiv-article-updater"
-version = "0.1.0"
+version = "0.2.0"
 description = "A lightweight, personalized research paper dashboard."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,7 +17,7 @@ dependencies = [
   "httpcore>=1.0,<1.1",
   "httpx>=0.28,<0.29",
   "jinja2>=3.1,<4",
-  "keyring>=25.6,<26; platform_system == 'Windows'",
+  "keyring>=25.6,<26; platform_system == 'Windows' or platform_system == 'Darwin'",
   "openai>=1.68,<3",
   "playwright>=1.52,<2",
   "pillow>=11.3,<12",
@@ -40,6 +40,9 @@ dev = [
   "pytest-cov>=6,<7",
   "ruff>=0.11,<1",
   "types-python-dateutil>=2.9,<3",
+]
+release = [
+  "pyinstaller>=6.17,<7",
 ]
 
 [project.scripts]

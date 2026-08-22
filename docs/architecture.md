@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TD
-    C["Windows 托盘控制器"] --> W["FastAPI + APScheduler"]
+    C["Windows 托盘 / macOS 菜单栏控制器"] --> W["FastAPI + APScheduler"]
     C --> B["浏览器阅读界面"]
     W --> S["按来源独立调度"]
     S --> X["arXiv / SciRate / Scholar / 用户期刊"]
@@ -20,9 +20,10 @@ flowchart TD
 ## 运行边界
 
 - 只支持本机 SQLite，Uvicorn 只监听 `127.0.0.1`、`::1` 或 `localhost`。
-- 开发模式使用 `arxiv-updater serve`；日常使用由 `.pyw` 托盘控制器在同一生命周期内拥有 Uvicorn 和调度器。
-- Windows 互斥量保证单实例，本机 IPC 只处理 `OPEN` 命令；控制器不会结束或接管未知端口进程。
-- API key 只由设置页写入当前 Windows 用户的凭据管理器，不从项目配置文件读取。密钥不写入数据库、日志、页面或测试，关闭开关会让运行时配置返回空密钥。
+- 开发模式使用 `arxiv-updater serve`；Windows `.pyw` 托盘控制器和 macOS 菜单栏控制器分别在同一生命周期内拥有 Uvicorn 与调度器。
+- Windows 互斥量或 macOS 文件锁保证单实例，本机 IPC 只处理 `OPEN` 命令；控制器不会结束或接管未知端口进程。
+- Windows 便携版把状态放在解压目录；macOS 封装版把状态放在 `~/Library/Application Support/arXiv Updater/`。macOS 登录自启是用户从菜单明确开启的用户级 LaunchAgent，使用 `--background` 启动且不会弹出浏览器。
+- API key 只由设置页写入 Windows 凭据管理器或 macOS Keychain，不从项目配置文件读取。密钥不写入数据库、日志、页面或测试，关闭开关会让运行时配置返回空密钥。
 
 ## 主要数据流
 

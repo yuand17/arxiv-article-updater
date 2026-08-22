@@ -1,0 +1,119 @@
+name: Release desktop applications
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build portable application
+        shell: pwsh
+        run: |
+          python -m pip install -e '.[release]'
+          pyinstaller --clean --noconfirm packaging\arxiv_updater_windows.spec
+      - name: Smoke-test packaged service
+        shell: pwsh
+        run: |
+          $env:ARXIV_UPDATER_STATE_DIR = Join-Path $env:RUNNER_TEMP 'arxiv-updater-state'
+          $env:ARXIV_UPDATER_PORT = '18080'
+          $env:ARXIV_UPDATER_IPC_PORT = '18731'
+          $env:ARXIV_UPDATER_MUTEX_NAME = 'Local\arXivUpdaterControllerRelease'
+          $env:PYTHON_KEYRING_BACKEND = 'keyring.backends.null.Keyring'
+          $process = Start-Process -FilePath '.\dist\arXiv Updater\arXiv Updater.exe' -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Packaged smoke test exited $($process.ExitCode)" }
+      - name: Assemble Windows download
+        shell: pwsh
+        run: |
+          Copy-Item scripts\install_windows_portable.ps1 'dist\arXiv Updater\Install arXiv Updater.ps1'
+          Copy-Item scripts\uninstall_windows_portable.ps1 'dist\arXiv Updater\Uninstall shortcuts.ps1'
+          Compress-Archive -Path 'dist\arXiv Updater\*' -DestinationPath 'arXiv-Updater-Windows-x64.zip'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-download
+          path: arXiv-Updater-Windows-x64.zip
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            download_name: Apple-Silicon
+          - runner: macos-15-intel
+            download_name: Intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build menu-bar application
+        run: |
+          python -m pip install -e '.[release]'
+          pyinstaller --clean --noconfirm packaging/arxiv_updater_macos.spec
+      - name: Verify app bundle and packaged service
+        env:
+          PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+          ARXIV_UPDATER_PORT: "18080"
+          ARXIV_UPDATER_IPC_PORT: "18731"
+        run: |
+          codesign --verify --deep --strict 'dist/arXiv Updater.app'
+          export ARXIV_UPDATER_STATE_DIR="$RUNNER_TEMP/arxiv-updater-state"
+          'dist/arXiv Updater.app/Contents/MacOS/arXiv Updater' --smoke-test
+          test -f "$ARXIV_UPDATER_STATE_DIR/data/arxiv_updater.db"
+      - name: Create DMG
+        env:
+          DOWNLOAD_NAME: ${{ matrix.download_name }}
+        run: |
+          mkdir -p dmg-root
+          cp -R 'dist/arXiv Updater.app' dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create \
+            -volname 'arXiv Updater' \
+            -srcfolder dmg-root \
+            -ov \
+            -format UDZO \
+            "arXiv-Updater-macOS-${DOWNLOAD_NAME}.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.download_name }}-download
+          path: arXiv-Updater-macOS-${{ matrix.download_name }}.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ ! -f "$notes_file" ]]; then
+            notes_file="README.md"
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* \
+              --title "arXiv Updater ${GITHUB_REF_NAME}" \
+              --notes-file "$notes_file"
+          fi

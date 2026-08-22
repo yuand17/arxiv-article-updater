@@ -4,6 +4,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -41,6 +42,18 @@ def find_chrome_executable() -> Path:
         root = os.environ.get(variable)
         if root:
             candidates.append(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    if sys.platform == "darwin":
+        candidates.extend(
+            (
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path.home()
+                / "Applications"
+                / "Google Chrome.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome",
+            )
+        )
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
