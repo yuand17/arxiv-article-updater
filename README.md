@@ -20,6 +20,18 @@ All packaged applications contain Python and the required runtime; Python and Gi
 
 所有封装版本都已经包含 Python 和所需运行环境，日常使用无需另行安装 Python 或 Git。源码压缩包和版本说明仍可在 [GitHub 最新 Release](https://github.com/yuand17/arxiv-article-updater/releases/latest) 找到。
 
+Each release includes `SHA256SUMS.txt`. Because the Windows executable is not code-signed and the macOS app is not Apple-notarized, verify the downloaded file before approving an operating-system warning:
+
+每个版本都包含 `SHA256SUMS.txt`。Windows 可执行文件尚未进行代码签名，macOS 应用也尚未经过 Apple 公证；如果系统弹出安全警告，请先核对下载文件：
+
+```powershell
+Get-FileHash .\arXiv-Updater-Windows-x64.zip -Algorithm SHA256
+```
+
+```bash
+shasum -a 256 arXiv-Updater-macOS-Apple-Silicon.dmg
+```
+
 ## Features / 主要功能
 
 ### English
@@ -77,11 +89,11 @@ Publisher RSS or Atom feeds define the journal article universe. Crossref may en
 ### Windows
 
 1. Download the Windows ZIP above and extract the complete folder to a stable location.
-2. Double-click `arXiv Updater.exe`. To create desktop and login-startup shortcuts, right-click `Install arXiv Updater.ps1` and run it with PowerShell.
+2. Double-click `arXiv Updater.exe`. The executable is not code-signed, so Windows SmartScreen may show **Windows protected your PC**. Continue through **More info → Run anyway** only after the ZIP checksum matches `SHA256SUMS.txt`. To create desktop and login-startup shortcuts, right-click `Install arXiv Updater.ps1` and run it with PowerShell.
 3. Use the tray icon to open or quit the reader. The first run creates a new local database; it never downloads another user's library.
 
 1. 下载上面的 Windows ZIP，并将整个文件夹解压到一个不会随意移动的位置。
-2. 双击 `arXiv Updater.exe`。如需创建桌面和登录自启快捷方式，请右键 `Install arXiv Updater.ps1` 并使用 PowerShell 运行。
+2. 双击 `arXiv Updater.exe`。可执行文件尚未进行代码签名，因此 Windows SmartScreen 可能显示“Windows 已保护你的电脑”；只有在 ZIP 的校验值与 `SHA256SUMS.txt` 一致后，才通过“更多信息 → 仍要运行”继续。如需创建桌面和登录自启快捷方式，请右键 `Install arXiv Updater.ps1` 并使用 PowerShell 运行。
 3. 通过托盘图标打开或退出阅读器。首次运行只会新建空的本地数据库，不会下载其他用户的论文库。
 
 ### macOS
@@ -201,6 +213,7 @@ CI 同时覆盖 Ubuntu 单元与浏览器测试、Windows wheel/托盘/便携版
 - [Architecture / 当前架构](docs/architecture.md)
 - [Sources, classification, and scheduling / 来源、分类与调度](docs/sources.md)
 - [Legacy single-user refactor status / 旧单用户改造方案状态](docs/single-user-refactor-plan.md)
+- [v0.2.1 release notes / v0.2.1 发布说明](docs/releases/v0.2.1.md)
 - [v0.2.0 release notes / v0.2.0 发布说明](docs/releases/v0.2.0.md)
 - [v0.1.0 release notes / v0.1.0 发布说明](docs/releases/v0.1.0.md)
 - [Third-party browser resources / 第三方浏览器资源说明](THIRD_PARTY_NOTICES.md)

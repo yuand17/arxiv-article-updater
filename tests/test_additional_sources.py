@@ -43,18 +43,20 @@ def test_chrome_discovery_supports_standard_macos_user_install(tmp_path, monkeyp
 
 def test_parse_scholar_author_id():
     assert (
-        parse_scholar_author_id("https://scholar.google.com/citations?user=Qexu0QwAAAAJ&hl=en")
-        == "Qexu0QwAAAAJ"
+        parse_scholar_author_id(
+            "https://scholar.google.com/citations?user=test_author_1234&hl=en"
+        )
+        == "test_author_1234"
     )
     assert (
         parse_scholar_author_id(
-            "https://scholar.google.com/citations?user=Qexu0QwAAAAJ"
+            "https://scholar.google.com/citations?user=test_author_1234"
             "&view_op=list_works&sortby=citedby&cstart=0&pagesize=100"
         )
-        == "Qexu0QwAAAAJ"
+        == "test_author_1234"
     )
     with pytest.raises(ValueError):
-        parse_scholar_author_id("https://example.com/citations?user=Qexu0QwAAAAJ")
+        parse_scholar_author_id("https://example.com/citations?user=test_author_1234")
 
 
 def test_parse_scholar_response():
@@ -99,7 +101,7 @@ def test_scholar_http_errors_never_include_the_serpapi_key():
         return httpx.Response(401, request=request)
 
     adapter = ScholarAdapter(
-        ["Qexu0QwAAAAJ"],
+        ["test_author_1234"],
         settings=Settings(serpapi_api_key=secret),
         client=httpx.Client(transport=httpx.MockTransport(unauthorized)),
     )
@@ -127,7 +129,7 @@ def test_scholar_account_usage_reads_authoritative_quota_without_exposing_key():
         )
 
     adapter = ScholarAdapter(
-        ["Qexu0QwAAAAJ"],
+        ["test_author_1234"],
         settings=Settings(serpapi_api_key=secret),
         client=httpx.Client(transport=httpx.MockTransport(account)),
     )
@@ -161,7 +163,7 @@ def test_scholar_fetch_uses_date_sort_and_keeps_only_latest_ten():
         )
 
     adapter = ScholarAdapter(
-        ["Qexu0QwAAAAJ"],
+        ["test_author_1234"],
         settings=Settings(serpapi_api_key="test-key"),
         client=httpx.Client(transport=httpx.MockTransport(latest_articles)),
     )
@@ -175,15 +177,15 @@ def test_scholar_fetch_uses_date_sort_and_keeps_only_latest_ten():
         f"Date-sorted paper {index}" for index in range(10)
     ]
     assert all(
-        paper.metadata["tracked_author_id"] == "Qexu0QwAAAAJ" for paper in papers
+        paper.metadata["tracked_author_id"] == "test_author_1234" for paper in papers
     )
 
 
 def test_parse_scirate_page():
     records = parse_scirate_page((FIXTURES / "scirate.html").read_text(encoding="utf-8"))
     assert [(record.arxiv_id, record.scites_count) for record in records] == [
-        ("2607.12345", 12),
-        ("2607.55555", 0),
+        ("9999.99991", 12),
+        ("9999.99992", 0),
     ]
     assert records[0].title == "A paper"
     assert records[0].authors == ["Alice Example", "Bob Example"]

@@ -223,7 +223,18 @@ def enable_login_startup(
         text=True,
     )
     if loaded.returncode == 0:
-        return
+        # A previous app location can remain registered with launchd even
+        # after its plist is replaced.  Reload the job so login startup always
+        # targets the currently installed application bundle.
+        unloaded = subprocess.run(
+            [launchctl, "bootout", f"{domain}/{LOGIN_AGENT_LABEL}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if unloaded.returncode != 0:
+            detail = unloaded.stderr.strip() or unloaded.stdout.strip() or "launchctl failed"
+            raise RuntimeError(f"无法更新登录自启：{detail}")
 
     result = subprocess.run(
         [launchctl, "bootstrap", domain, str(path)],
@@ -392,6 +403,28 @@ def run_smoke_test() -> None:
     finally:
         controller.stop()
         controller.wait_for_shutdown()
+    run_menu_bar_smoke_test()
+
+
+def run_menu_bar_smoke_test() -> None:
+    """Exercise the packaged AppKit menu-bar backend without opening a browser."""
+
+    import pystray
+    from PIL import Image
+
+    image = Image.open(resource_path("arxiv_updater/static/icons/arxiv-updater-icon.png"))
+    icon = pystray.Icon(
+        "arxiv-updater-smoke",
+        image,
+        "arXiv Updater",
+        pystray.Menu(pystray.MenuItem("arXiv Updater", lambda _icon, _item: None)),
+    )
+
+    def stop_after_start(started_icon) -> None:
+        started_icon.visible = True
+        started_icon.stop()
+
+    icon.run(setup=stop_after_start)
 
 
 def main() -> None:

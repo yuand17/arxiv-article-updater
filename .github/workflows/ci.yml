@@ -4,11 +4,16 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -24,10 +29,26 @@ jobs:
           alembic upgrade head
           alembic check
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]" "pip-audit>=2.9,<3"
+      - run: python -m pip_audit --skip-editable
+
   browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -40,6 +61,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -75,6 +98,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -83,6 +108,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install -e '.[release]'
+          python scripts\verify_system_keyring.py
           pyinstaller --clean --noconfirm packaging\arxiv_updater_windows.spec
       - name: Smoke-test packaged Windows service
         shell: pwsh
@@ -97,18 +123,25 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $env:ARXIV_UPDATER_STATE_DIR 'data\arxiv_updater.db'))) {
             throw 'Packaged application did not initialize its database'
           }
+          if (Test-Path -LiteralPath (Join-Path $env:ARXIV_UPDATER_STATE_DIR 'data\backups')) {
+            throw 'Fresh packaged application unexpectedly created a migration backup'
+          }
 
   macos-packaged-app:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
       - name: Build Apple Silicon menu-bar application
         run: |
-          python -m pip install -e '.[release]'
+          python -m pip install -e '.[dev,release]'
+          python scripts/verify_system_keyring.py
+          python -m pytest tests/test_macos_controller.py tests/test_release_metadata.py
           pyinstaller --clean --noconfirm packaging/arxiv_updater_macos.spec
       - name: Verify app bundle and packaged service
         env:
@@ -117,6 +150,8 @@ jobs:
           ARXIV_UPDATER_IPC_PORT: "18731"
         run: |
           codesign --verify --deep --strict 'dist/arXiv Updater.app'
+          file 'dist/arXiv Updater.app/Contents/MacOS/arXiv Updater' | grep -q arm64
           export ARXIV_UPDATER_STATE_DIR="$RUNNER_TEMP/arxiv-updater-state"
           'dist/arXiv Updater.app/Contents/MacOS/arXiv Updater' --smoke-test
           test -f "$ARXIV_UPDATER_STATE_DIR/data/arxiv_updater.db"
+          test ! -e "$ARXIV_UPDATER_STATE_DIR/data/backups"

@@ -26,7 +26,7 @@ def test_parse_arxiv_feed():
     papers = parse_arxiv_feed(FIXTURE.read_text(encoding="utf-8"))
     assert len(papers) == 1
     paper = papers[0]
-    assert paper.arxiv_id == "2607.12345"
+    assert paper.arxiv_id == "9999.99991"
     assert paper.title == "Entanglement Growth in a Noisy Quantum Chain"
     assert paper.authors == ["Alice Example", "Bob Example"]
     assert paper.categories == ["quant-ph", "cond-mat.stat-mech"]
@@ -209,8 +209,8 @@ def test_newer_arxiv_revision_refreshes_authoritative_metadata_and_keeps_interac
         updated_at=original.updated_at + timedelta(days=1),
         doi="10.1000/revised.2",
         categories=["quant-ph"],
-        canonical_url="https://arxiv.org/abs/2607.12345v2",
-        pdf_url="https://arxiv.org/pdf/2607.12345v2",
+        canonical_url="https://arxiv.org/abs/9999.99991v2",
+        pdf_url="https://arxiv.org/pdf/9999.99991v2",
         metadata={"revision": "v2"},
     )
 
@@ -270,8 +270,8 @@ def test_older_arxiv_revision_cannot_overwrite_newer_metadata(app_client):
         updated_at=old.updated_at + timedelta(days=2),
         doi="10.1000/current.3",
         categories=["quant-ph"],
-        canonical_url="https://arxiv.org/abs/2607.12345v3",
-        pdf_url="https://arxiv.org/pdf/2607.12345v3",
+        canonical_url="https://arxiv.org/abs/9999.99991v3",
+        pdf_url="https://arxiv.org/pdf/9999.99991v3",
         metadata={"revision": "v3"},
     )
 
@@ -315,7 +315,7 @@ def test_arxiv_adapter_uses_daily_page_cache(tmp_path):
 
     papers = adapter.fetch()
 
-    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+    assert [paper.arxiv_id for paper in papers] == ["9999.99991"]
 
 
 def test_daily_response_cache_can_expire_stale_arxiv_data(tmp_path):
@@ -349,7 +349,7 @@ def test_arxiv_adapter_retries_rate_limit(tmp_path, monkeypatch):
     papers = adapter.fetch()
 
     assert calls == 2
-    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+    assert [paper.arxiv_id for paper in papers] == ["9999.99991"]
 
 
 def test_arxiv_adapter_retries_transport_error_and_keeps_three_second_spacing(
@@ -387,7 +387,7 @@ def test_arxiv_adapter_retries_transport_error_and_keeps_three_second_spacing(
 
     assert calls == 2
     assert sleeps == [3.0]
-    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+    assert [paper.arxiv_id for paper in papers] == ["9999.99991"]
 
 
 @pytest.mark.parametrize(
@@ -429,7 +429,7 @@ def test_arxiv_adapter_retries_transient_status_and_bounds_retry_after(
 
     assert calls == 2
     assert sleeps == [expected_delay]
-    assert [paper.arxiv_id for paper in papers] == ["2607.12345"]
+    assert [paper.arxiv_id for paper in papers] == ["9999.99991"]
 
 
 def test_arxiv_adapter_does_not_retry_nontransient_403(tmp_path, monkeypatch):
