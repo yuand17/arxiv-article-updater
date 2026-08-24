@@ -12,10 +12,10 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Verify tag, package metadata, and release notes agree
@@ -28,10 +28,10 @@ jobs:
     needs: validate
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -69,7 +69,7 @@ jobs:
           Copy-Item README.md 'dist\arXiv Updater\README.md'
           Copy-Item LICENSE 'dist\arXiv Updater\LICENSE.txt'
           Compress-Archive -Path 'dist\arXiv Updater\*' -DestinationPath 'arXiv-Updater-Windows-x64.zip'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-download
           path: arXiv-Updater-Windows-x64.zip
@@ -89,10 +89,10 @@ jobs:
             expected_arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -135,7 +135,7 @@ jobs:
             -ov \
             -format UDZO \
             "arXiv-Updater-macOS-${DOWNLOAD_NAME}.dmg"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.download_name }}-download
           path: arXiv-Updater-macOS-${{ matrix.download_name }}.dmg
@@ -147,10 +147,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
