@@ -108,7 +108,10 @@ def migrate_database() -> None:
     with engine.connect() as connection:
         current_revision = MigrationContext.configure(connection).get_current_revision()
     backup_path = None
-    if current_revision != head_revision:
+    # Creating an SQLite connection materializes an empty database file.  A
+    # brand-new install has nothing to preserve yet, so do not leave a
+    # misleading pre-migration backup beside its first database.
+    if tables and current_revision != head_revision:
         backup_path = backup_sqlite_database()
     try:
         command.upgrade(config, "head")

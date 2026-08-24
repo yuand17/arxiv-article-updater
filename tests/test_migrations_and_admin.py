@@ -1,11 +1,13 @@
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select
 
+import arxiv_updater.db as db_module
 from alembic import command
 from arxiv_updater.config import get_settings
 from arxiv_updater.db import alembic_config_path
@@ -16,6 +18,56 @@ def test_alembic_config_is_available_to_the_runtime():
 
     assert config_path.is_file()
     assert (config_path.parent / "alembic" / "env.py").is_file()
+
+
+@pytest.mark.parametrize(
+    ("tables", "current_revision", "backup_expected"),
+    [
+        ([], None, False),
+        (["alembic_version", "papers"], "0006", True),
+    ],
+)
+def test_migration_backup_is_only_created_for_an_existing_database(
+    monkeypatch,
+    tables,
+    current_revision,
+    backup_expected,
+):
+    backup_requested = False
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    def record_backup():
+        nonlocal backup_requested
+        backup_requested = True
+
+    monkeypatch.setattr(
+        db_module,
+        "inspect",
+        lambda _engine: SimpleNamespace(get_table_names=lambda: tables),
+    )
+    monkeypatch.setattr(db_module.engine, "connect", lambda: FakeConnection())
+    monkeypatch.setattr(
+        db_module.MigrationContext,
+        "configure",
+        lambda _connection: SimpleNamespace(get_current_revision=lambda: current_revision),
+    )
+    monkeypatch.setattr(
+        db_module.ScriptDirectory,
+        "from_config",
+        lambda _config: SimpleNamespace(get_current_head=lambda: "0007"),
+    )
+    monkeypatch.setattr(db_module, "backup_sqlite_database", record_backup)
+    monkeypatch.setattr(command, "upgrade", lambda _config, _revision: None)
+
+    db_module.migrate_database()
+
+    assert backup_requested is backup_expected
 
 
 def test_fresh_database_contains_no_personal_library_state(tmp_path, monkeypatch):

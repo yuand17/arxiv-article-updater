@@ -106,10 +106,42 @@ def test_macos_smoke_service_does_not_start_scheduler(monkeypatch) -> None:
     monkeypatch.setattr(controller, "wait_for_shutdown", lambda: None)
     monkeypatch.setattr(launcher, "MenuBarController", lambda **_kwargs: controller)
     monkeypatch.setattr(launcher, "wait_for_health", lambda: True)
+    monkeypatch.setattr(launcher, "run_menu_bar_smoke_test", lambda: None)
 
     launcher.run_smoke_test()
 
     assert received["with_scheduler"] is False
+
+
+def test_macos_menu_bar_smoke_starts_and_stops_backend(monkeypatch) -> None:
+    launcher = _load_launcher()
+    events: list[str] = []
+
+    class FakeIcon:
+        visible = False
+
+        def __init__(self, *_args) -> None:
+            pass
+
+        def run(self, *, setup) -> None:
+            events.append("run")
+            setup(self)
+
+        def stop(self) -> None:
+            events.append("stop")
+
+    fake_pystray = SimpleNamespace(
+        Icon=FakeIcon,
+        Menu=lambda *items: items,
+        MenuItem=lambda *items: items,
+    )
+    fake_pil = SimpleNamespace(Image=SimpleNamespace(open=lambda _path: object()))
+    monkeypatch.setitem(__import__("sys").modules, "pystray", fake_pystray)
+    monkeypatch.setitem(__import__("sys").modules, "PIL", fake_pil)
+
+    launcher.run_menu_bar_smoke_test()
+
+    assert events == ["run", "stop"]
 
 
 def test_login_agent_targets_packaged_app_and_background_mode(tmp_path, monkeypatch) -> None:
@@ -163,3 +195,27 @@ def test_login_agent_rejects_non_app_executable(tmp_path) -> None:
         assert "打包后的" in str(exc)
     else:
         raise AssertionError("non-app executable unexpectedly accepted")
+
+
+def test_login_agent_reloads_an_existing_launchd_job(tmp_path, monkeypatch) -> None:
+    launcher = _load_launcher()
+    executable = (
+        tmp_path / "Applications" / "arXiv Updater.app" / "Contents" / "MacOS" / "arXiv Updater"
+    )
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "arxiv-updater.plist"
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher, "current_user_id", lambda: 501)
+
+    launcher.enable_login_startup(executable=executable, plist_path=plist_path)
+
+    assert calls == [
+        ["/bin/launchctl", "print", f"gui/501/{launcher.LOGIN_AGENT_LABEL}"],
+        ["/bin/launchctl", "bootout", f"gui/501/{launcher.LOGIN_AGENT_LABEL}"],
+        ["/bin/launchctl", "bootstrap", "gui/501", str(plist_path)],
+    ]

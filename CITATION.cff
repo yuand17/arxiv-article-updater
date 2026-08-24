@@ -7,10 +7,10 @@ authors:
     given-names: "Dong"
     alias: "袁冬"
     affiliation: "Institute for Interdisciplinary Information Sciences, Tsinghua University"
-version: 0.2.0
-date-released: 2026-08-22
+version: 0.2.1
+date-released: 2026-08-24
 repository-code: "https://github.com/yuand17/arxiv-article-updater"
-url: "https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.2.0"
+url: "https://github.com/yuand17/arxiv-article-updater/releases/tag/v0.2.1"
 license: MIT
 abstract: >-
   A privacy-first Windows and macOS desktop research-paper library that combines

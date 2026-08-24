@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
   <entry>
-    <id>http://arxiv.org/abs/2607.12345v2</id>
+    <id>http://arxiv.org/abs/9999.99991v2</id>
     <updated>2026-07-30T10:00:00Z</updated>
     <published>2026-07-29T10:00:00Z</published>
     <title>  Entanglement Growth in a Noisy Quantum Chain </title>
@@ -11,8 +11,7 @@
     <category term="quant-ph" />
     <category term="cond-mat.stat-mech" />
     <arxiv:doi>10.1000/example.1</arxiv:doi>
-    <link rel="alternate" href="https://arxiv.org/abs/2607.12345v2" />
-    <link title="pdf" href="https://arxiv.org/pdf/2607.12345v2" rel="related" type="application/pdf" />
+    <link rel="alternate" href="https://arxiv.org/abs/9999.99991v2" />
+    <link title="pdf" href="https://arxiv.org/pdf/9999.99991v2" rel="related" type="application/pdf" />
   </entry>
 </feed>
-

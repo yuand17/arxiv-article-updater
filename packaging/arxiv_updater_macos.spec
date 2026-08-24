@@ -1,9 +1,12 @@
+import tomllib
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 
 project_root = Path(SPEC).resolve().parents[1]
+with (project_root / "pyproject.toml").open("rb") as stream:
+    app_version = tomllib.load(stream)["project"]["version"]
 package_datas, package_binaries, package_hiddenimports = collect_all("arxiv_updater")
 hiddenimports = sorted(
     set(
@@ -75,7 +78,7 @@ app = BUNDLE(
         / "arxiv-updater-icon.png"
     ),
     bundle_identifier="com.yuand17.arxiv-updater",
-    version="0.2.0",
+    version=app_version,
     info_plist={
         "CFBundleDisplayName": "arXiv Updater",
         "LSMinimumSystemVersion": "13.0",

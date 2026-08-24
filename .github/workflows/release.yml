@@ -6,13 +6,31 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify tag, package metadata, and release notes agree
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$GITHUB_REF_NAME" = "v${version}"
+          test -f "docs/releases/${GITHUB_REF_NAME}.md"
+
   windows:
+    needs: validate
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -21,6 +39,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install -e '.[release]'
+          python scripts\verify_system_keyring.py
           pyinstaller --clean --noconfirm packaging\arxiv_updater_windows.spec
       - name: Smoke-test packaged service
         shell: pwsh
@@ -32,11 +51,23 @@ jobs:
           $env:PYTHON_KEYRING_BACKEND = 'keyring.backends.null.Keyring'
           $process = Start-Process -FilePath '.\dist\arXiv Updater\arXiv Updater.exe' -ArgumentList '--smoke-test' -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Packaged smoke test exited $($process.ExitCode)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:ARXIV_UPDATER_STATE_DIR 'data\arxiv_updater.db'))) {
+            throw 'Packaged application did not initialize its database'
+          }
+          if (Test-Path -LiteralPath (Join-Path $env:ARXIV_UPDATER_STATE_DIR 'data\backups')) {
+            throw 'Fresh packaged application unexpectedly created a migration backup'
+          }
       - name: Assemble Windows download
         shell: pwsh
         run: |
+          $forbidden = Get-ChildItem -LiteralPath 'dist\arXiv Updater' -Recurse -File | Where-Object {
+            $_.Name -eq '.env' -or $_.Extension -in '.db', '.sqlite', '.sqlite3', '.log' -or $_.Name -like '*.db.bak'
+          }
+          if ($forbidden) { throw "Personal state found in release tree: $($forbidden.FullName -join ', ')" }
           Copy-Item scripts\install_windows_portable.ps1 'dist\arXiv Updater\Install arXiv Updater.ps1'
           Copy-Item scripts\uninstall_windows_portable.ps1 'dist\arXiv Updater\Uninstall shortcuts.ps1'
+          Copy-Item README.md 'dist\arXiv Updater\README.md'
+          Copy-Item LICENSE 'dist\arXiv Updater\LICENSE.txt'
           Compress-Archive -Path 'dist\arXiv Updater\*' -DestinationPath 'arXiv-Updater-Windows-x64.zip'
       - uses: actions/upload-artifact@v4
         with:
@@ -45,17 +76,22 @@ jobs:
           if-no-files-found: error
 
   macos:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: macos-14
             download_name: Apple-Silicon
+            expected_arch: arm64
           - runner: macos-15-intel
             download_name: Intel
+            expected_arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -63,23 +99,35 @@ jobs:
       - name: Build menu-bar application
         run: |
           python -m pip install -e '.[release]'
+          python scripts/verify_system_keyring.py
           pyinstaller --clean --noconfirm packaging/arxiv_updater_macos.spec
       - name: Verify app bundle and packaged service
         env:
           PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
           ARXIV_UPDATER_PORT: "18080"
           ARXIV_UPDATER_IPC_PORT: "18731"
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
         run: |
           codesign --verify --deep --strict 'dist/arXiv Updater.app'
+          file 'dist/arXiv Updater.app/Contents/MacOS/arXiv Updater' | grep -q "$EXPECTED_ARCH"
+          bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 'dist/arXiv Updater.app/Contents/Info.plist')"
+          test "v${bundle_version}" = "$GITHUB_REF_NAME"
           export ARXIV_UPDATER_STATE_DIR="$RUNNER_TEMP/arxiv-updater-state"
           'dist/arXiv Updater.app/Contents/MacOS/arXiv Updater' --smoke-test
           test -f "$ARXIV_UPDATER_STATE_DIR/data/arxiv_updater.db"
+          test ! -e "$ARXIV_UPDATER_STATE_DIR/data/backups"
+          if find 'dist/arXiv Updater.app' -type f \( -name '.env' -o -name '*.db' -o -name '*.db.bak' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*.log' \) | grep -q .; then
+            echo 'Personal state found in macOS release tree' >&2
+            exit 1
+          fi
       - name: Create DMG
         env:
           DOWNLOAD_NAME: ${{ matrix.download_name }}
         run: |
           mkdir -p dmg-root
           cp -R 'dist/arXiv Updater.app' dmg-root/
+          cp README.md dmg-root/
+          cp LICENSE dmg-root/
           ln -s /Applications dmg-root/Applications
           hdiutil create \
             -volname 'arXiv Updater' \
@@ -94,14 +142,21 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [windows, macos]
+    needs: [validate, windows, macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
+      - name: Create release checksums
+        run: |
+          sha256sum release-assets/arXiv-Updater-* | sed 's#release-assets/##' > release-assets/SHA256SUMS.txt
       - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -111,7 +166,7 @@ jobs:
             notes_file="README.md"
           fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+            gh release upload "$GITHUB_REF_NAME" release-assets/*
           else
             gh release create "$GITHUB_REF_NAME" release-assets/* \
               --title "arXiv Updater ${GITHUB_REF_NAME}" \
