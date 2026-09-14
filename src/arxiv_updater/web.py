@@ -50,6 +50,7 @@ from .services.preferences import (
     rebuild_preference_profile_in_background,
 )
 from .services.ranking import available_categories, rank_papers
+from .sources.journals import JOURNAL_ENRICHMENT_WARNING_PREFIX
 from .sources.scholar import parse_scholar_author_id
 
 PACKAGE_DIR = Path(__file__).parent
@@ -168,6 +169,8 @@ def display_source_error(value: str | None) -> str:
     error = (value or "").strip()
     if not error:
         return ""
+    if error.startswith(JOURNAL_ENRICHMENT_WARNING_PREFIX):
+        return "期刊来源已更新；摘要补全暂不可用，部分论文摘要可能不完整。"
     lowered = error.casefold()
     if lowered.startswith("partial sync:"):
         return "部分期刊暂时未更新；其他期刊已成功，程序会按计划继续检查。"
@@ -218,6 +221,9 @@ def display_source_error(value: str | None) -> str:
 templates.env.globals["source_label"] = source_label
 templates.env.globals["tracked_author_count"] = tracked_author_count
 templates.env.globals["display_source_error"] = display_source_error
+templates.env.globals["is_source_warning"] = lambda value: (value or "").startswith(
+    JOURNAL_ENRICHMENT_WARNING_PREFIX
+)
 
 
 def local_datetime(value: datetime | None, pattern: str = "%Y-%m-%d %H:%M") -> str:

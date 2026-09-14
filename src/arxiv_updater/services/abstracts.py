@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from ..arxiv_network import get_arxiv_request_gate
 from ..db import SessionLocal
 from ..journal_network import get_journal_network
 from ..models import Paper, utcnow
@@ -69,7 +70,8 @@ def _local_match(db: Session, paper: Paper) -> AbstractMatch | None:
 
 
 def _arxiv_abstract(arxiv_id: str, client: httpx.Client) -> str:
-    response = client.get(
+    response = get_arxiv_request_gate().get(
+        client,
         ARXIV_QUERY_URL,
         params={"id_list": arxiv_id},
         headers={"User-Agent": "arxiv-updater/0.2 (personal research library)"},

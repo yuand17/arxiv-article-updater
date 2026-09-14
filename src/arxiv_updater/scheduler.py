@@ -8,6 +8,7 @@ from apscheduler.schedulers.base import BaseScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .arxiv_network import get_arxiv_request_gate
 from .arxiv_schedule import next_arxiv_update_at
 from .config import get_settings
 from .datetime_utils import as_utc
@@ -113,9 +114,15 @@ def _set_next_due(
         )
         schedule.last_error = ""
     else:
-        schedule.next_due_at = aware_now + (
-            RATE_LIMIT_RETRY_DELAY if "429" in error else RETRY_DELAY
-        )
+        retry_delay = RATE_LIMIT_RETRY_DELAY if "429" in error else RETRY_DELAY
+        if schedule.source == "arxiv":
+            # Retry transient discovery failures while the daily announcement is
+            # still useful, and persist any longer server cooldown across restarts.
+            retry_delay = max(
+                RATE_LIMIT_RETRY_DELAY,
+                timedelta(seconds=get_arxiv_request_gate().remaining_cooldown_seconds()),
+            )
+        schedule.next_due_at = aware_now + retry_delay
 
 
 def run_source_update(

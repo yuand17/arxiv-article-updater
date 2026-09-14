@@ -64,7 +64,7 @@
   </section>
 
   <section class="settings-section">
-    <header><p class="eyebrow">SOURCES</p><h2>来源更新计划</h2><p>arXiv 跟随官方发布时刻；重点期刊每天检查；其他来源按独立频率计算。遇到限流 30 分钟后重试，其他失败 6 小时后重试。页面时间为北京时间。</p></header>
+    <header><p class="eyebrow">SOURCES</p><h2>来源更新计划</h2><p>arXiv 跟随官方发布时刻，失败约 30 分钟后重试；服务器要求更长等待时会延后。重点期刊每天检查；其他来源按独立频率计算，限流约 30 分钟后重试，其他失败约 6 小时后重试。页面时间为北京时间。</p></header>
     <div class="bulk-sync-row">
       <form method="post" action="/settings/sync/all" hx-post="/settings/sync/all" hx-swap="none"><button type="submit">一键更新四个来源</button></form>
       <small>按顺序更新 arXiv、SciRate、Google Scholar 和重点期刊；未启用的 Scholar 会自动跳过。</small>
@@ -146,7 +146,8 @@
             <div class="journal-title-line"><strong>{{ feed.name }}</strong><span class="status {{ 'status-success' if feed.is_active else 'status-skipped' }}">{{ '已订阅' if feed.is_active else '已关闭' }}</span></div>
             <small>{{ feed.canonical_domain }} · ISSN {{ feed.issn_online or feed.issn_print }}</small>
             <small>上次扫描 {{ feed.last_items_seen }} · 导入 {{ feed.last_items_imported }} · 排除非研究 {{ feed.last_nonresearch_filtered }} · 排除非物理 {{ feed.last_nonphysics_filtered }}</small>
-            {% if feed.last_error %}<small class="error">上次错误：{{ display_source_error(feed.last_error) }}</small>{% endif %}
+            {% if feed.last_success_at %}<small>上次成功更新：{{ feed.last_success_at|local_datetime }}</small>{% endif %}
+            {% if feed.last_error %}<small class="{{ 'source-warning' if is_source_warning(feed.last_error) else 'error' }}">{{ '提示：' if is_source_warning(feed.last_error) else '上次错误：' }}{{ display_source_error(feed.last_error) }}</small>{% endif %}
           </div>
           <form method="post" action="/settings/journals/{{ feed.id }}/toggle" class="journal-switch-form" hx-post="/settings/journals/{{ feed.id }}/toggle" hx-target="#journal-section" hx-select="#journal-section" hx-swap="outerHTML">
             <label class="ios-switch">

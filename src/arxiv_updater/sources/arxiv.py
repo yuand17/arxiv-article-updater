@@ -1,3 +1,4 @@
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -7,12 +8,14 @@ from email.utils import parsedate_to_datetime
 import httpx
 from dateutil.parser import isoparse
 
+from ..arxiv_network import get_arxiv_request_gate
 from ..config import Settings, get_settings
 from .base import PaperCandidate, SourceAdapter
 from .cache import DailyResponseCache
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
+OPENSEARCH = "{http://a9.com/-/spec/opensearch/1.1/}"
 ARXIV_ID_PATTERN = re.compile(r"(?:abs/)?([^/]+?)(?:v\d+)?$")
 ARXIV_CACHE_MAX_AGE = timedelta(minutes=5)
 ARXIV_REQUEST_ATTEMPTS = 3
@@ -20,6 +23,14 @@ ARXIV_REQUEST_INTERVAL_SECONDS = 3.0
 ARXIV_RETRY_BASE_SECONDS = 3.0
 ARXIV_MAX_RETRY_AFTER_SECONDS = 30.0
 ARXIV_QUERY_URL = "https://export.arxiv.org/api/query"
+
+
+class ArxivResponseError(ValueError):
+    """The upstream response is not a complete arXiv result page."""
+
+
+class ArxivAPIError(ValueError):
+    """arXiv explicitly rejected the query in its Atom response."""
 
 
 def normalize_arxiv_id(value: str) -> str:
@@ -41,7 +52,7 @@ def _retry_after_seconds(response: httpx.Response, default: float) -> float:
                 seconds = (retry_at - datetime.now(UTC)).total_seconds()
             except (TypeError, ValueError, OverflowError):
                 seconds = default
-    return min(max(seconds, 0.0), ARXIV_MAX_RETRY_AFTER_SECONDS)
+    return max(seconds, 0.0) if math.isfinite(seconds) else default
 
 
 def _retryable_status(status_code: int) -> bool:
@@ -54,14 +65,29 @@ def _text(element: ET.Element, name: str) -> str:
 
 
 def parse_arxiv_feed(content: str, since: datetime | None = None) -> list[PaperCandidate]:
-    root = ET.fromstring(content)
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise ArxivResponseError("arXiv returned invalid or incomplete XML") from exc
+    if root.tag != f"{ATOM}feed":
+        raise ArxivResponseError("arXiv returned a non-Atom response")
     candidates: list[PaperCandidate] = []
     for entry in root.findall(f"{ATOM}entry"):
         entry_id = _text(entry, f"{ATOM}id")
+        if "/api/errors" in entry_id:
+            detail = _text(entry, f"{ATOM}summary")[:300] or "Query rejected"
+            raise ArxivAPIError(f"arXiv API error: {detail}")
+        if not entry_id or not _text(entry, f"{ATOM}title"):
+            raise ArxivResponseError("arXiv returned an entry without its ID or title")
         arxiv_id = normalize_arxiv_id(entry_id)
-        published = isoparse(_text(entry, f"{ATOM}published"))
-        updated_text = _text(entry, f"{ATOM}updated")
-        updated = isoparse(updated_text) if updated_text else published
+        try:
+            published = isoparse(_text(entry, f"{ATOM}published"))
+            updated_text = _text(entry, f"{ATOM}updated")
+            updated = isoparse(updated_text) if updated_text else published
+        except (ValueError, OverflowError) as exc:
+            raise ArxivResponseError("arXiv returned an entry with an invalid date") from exc
+        if published.tzinfo is None or updated.tzinfo is None:
+            raise ArxivResponseError("arXiv returned an entry without a date timezone")
         if since and max(published, updated) < since:
             continue
         authors = [_text(author, f"{ATOM}name") for author in entry.findall(f"{ATOM}author")]
@@ -97,6 +123,31 @@ def parse_arxiv_feed(content: str, since: datetime | None = None) -> list[PaperC
     return candidates
 
 
+def _validate_page(content: str, start: int, count: int) -> None:
+    # Parse before caching: HTTP 200 can contain HTML, a truncated feed, or an API error.
+    papers = parse_arxiv_feed(content)
+    root = ET.fromstring(content)
+    metadata: dict[str, int] = {}
+    for name in ("totalResults", "startIndex"):
+        node = root.find(f"{OPENSEARCH}{name}")
+        if node is not None:
+            try:
+                value = int(node.text or "")
+            except ValueError as exc:
+                raise ArxivResponseError(f"arXiv returned invalid {name} metadata") from exc
+            if value < 0:
+                raise ArxivResponseError(f"arXiv returned negative {name} metadata")
+            metadata[name] = value
+    if "startIndex" in metadata and metadata["startIndex"] != start:
+        raise ArxivResponseError("arXiv returned a page with an unexpected start index")
+    if "totalResults" in metadata:
+        expected = min(count, max(0, metadata["totalResults"] - start))
+        if len(papers) != expected:
+            raise ArxivResponseError(
+                f"arXiv returned an incomplete page: expected {expected}, received {len(papers)}"
+            )
+
+
 class ArxivAdapter(SourceAdapter):
     name = "arxiv"
 
@@ -115,6 +166,7 @@ class ArxivAdapter(SourceAdapter):
         self.page_size = min(page_size, max_results) if max_results else page_size
         self.max_pages = max_pages
         self.cache = cache or DailyResponseCache("arxiv")
+        self._request_gate = get_arxiv_request_gate()
         self._last_network_request: float | None = None
         self._next_network_request_at = 0.0
 
@@ -138,11 +190,18 @@ class ArxivAdapter(SourceAdapter):
         cache_key = f"{category_query}|{start}|{count}"
         cached = self.cache.get(cache_key, max_age=ARXIV_CACHE_MAX_AGE)
         if cached is not None:
-            return cached
+            try:
+                _validate_page(cached, start, count)
+            except (ArxivResponseError, ArxivAPIError):
+                # Older versions cached responses before validation; fetch a fresh page.
+                pass
+            else:
+                return cached
         for attempt in range(ARXIV_REQUEST_ATTEMPTS):
             self._wait_for_request_slot()
             try:
-                response = self.client.get(
+                response = self._request_gate.get(
+                    self.client,
                     ARXIV_QUERY_URL,
                     params={
                         "search_query": category_query,
@@ -171,10 +230,20 @@ class ArxivAdapter(SourceAdapter):
                     response,
                     ARXIV_RETRY_BASE_SECONDS * (2**attempt),
                 )
+                if retry_delay > ARXIV_MAX_RETRY_AFTER_SECONDS:
+                    # Leave long server cooldowns to the scheduler, never retry early.
+                    response.raise_for_status()
                 self._schedule_retry(retry_delay)
                 continue
 
             response.raise_for_status()
+            try:
+                _validate_page(response.text, start, count)
+            except ArxivResponseError:
+                if attempt == ARXIV_REQUEST_ATTEMPTS - 1:
+                    raise
+                self._schedule_retry(ARXIV_RETRY_BASE_SECONDS * (2**attempt))
+                continue
             self.cache.put(cache_key, response.text)
             return response.text
 

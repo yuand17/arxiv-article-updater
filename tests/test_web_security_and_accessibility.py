@@ -264,3 +264,38 @@ def test_low_level_source_errors_are_classified_for_the_ui(
     assert expected_message in settings.text
     assert stored_error not in settings.text
     assert display_source_error(stored_error).startswith(expected_message)
+
+
+def test_journal_optional_enrichment_is_shown_as_warning_and_clears_after_recovery(app_client):
+    from bs4 import BeautifulSoup
+
+    from arxiv_updater.models import utcnow
+    from arxiv_updater.services.journal_catalog import ensure_builtin_journals
+    from arxiv_updater.sources.journals import JOURNAL_ENRICHMENT_WARNING_PREFIX
+
+    client, session_factory, models = app_client
+    with session_factory() as db:
+        journal = ensure_builtin_journals(db)[0]
+        journal_id = journal.id
+        journal.last_success_at = utcnow()
+        journal.last_error = JOURNAL_ENRICHMENT_WARNING_PREFIX + "Crossref HTTP 503"
+        db.commit()
+
+    response = client.get("/settings")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.text, "html.parser")
+    row = soup.select_one(".journal-row")
+    assert row is not None
+    assert row.select_one(".source-warning") is not None
+    assert row.select_one(".error") is None
+    assert "期刊来源已更新" in row.get_text()
+    assert "上次成功更新" in row.get_text()
+    assert "HTTP 503" not in row.get_text()
+
+    with session_factory() as db:
+        journal = db.get(models.JournalSubscription, journal_id)
+        journal.last_error = ""
+        db.commit()
+
+    recovered = BeautifulSoup(client.get("/settings").text, "html.parser")
+    assert recovered.select_one(".journal-row .source-warning") is None

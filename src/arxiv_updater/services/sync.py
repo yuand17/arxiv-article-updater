@@ -20,7 +20,11 @@ from ..models import (
 from ..security import redact_sensitive_text
 from ..sources.arxiv import ArxivAdapter
 from ..sources.base import PaperCandidate
-from ..sources.journals import JournalAdapter, JournalFeed
+from ..sources.journals import (
+    JOURNAL_ENRICHMENT_WARNING_PREFIX,
+    JournalAdapter,
+    JournalFeed,
+)
 from ..sources.scholar import ScholarAdapter, SerpApiAccountUsage
 from ..sources.scirate import SciRateAdapter
 from .article_classification import classify_journal_candidate
@@ -270,6 +274,10 @@ def _sync_journals(
                 )
             subscription.last_success_at = utcnow()
             subscription.last_error = "; ".join(adapter.errors)[:2000]
+            if not subscription.last_error and adapter.warnings:
+                subscription.last_error = (
+                    JOURNAL_ENRICHMENT_WARNING_PREFIX + "; ".join(adapter.warnings)
+                )[:2000]
             subscription.last_items_seen = scanned
             subscription.last_items_imported = imported
             subscription.last_nonresearch_filtered = nonresearch
