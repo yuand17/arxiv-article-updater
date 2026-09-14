@@ -419,6 +419,37 @@ def test_arxiv_rate_limit_retries_in_thirty_minutes(app_client):
         assert schedule.next_due_at == datetime(2026, 8, 9, 10, 30)
 
 
+@pytest.mark.parametrize(
+    ("error", "cooldown", "expected_delay"),
+    [
+        ("ReadTimeout: The read operation timed out", 0, timedelta(minutes=30)),
+        ("HTTPStatusError: 429", 7200, timedelta(hours=2)),
+        ("HTTPStatusError: 503", 7200, timedelta(hours=2)),
+    ],
+)
+def test_arxiv_retry_schedule_persists_recovery_delay(
+    app_client, monkeypatch, error, cooldown, expected_delay
+):
+    from types import SimpleNamespace
+
+    _, session_factory, models = app_client
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_arxiv_request_gate",
+        lambda: SimpleNamespace(remaining_cooldown_seconds=lambda: cooldown),
+    )
+    now = datetime(2026, 9, 14, 5, 0, tzinfo=UTC)
+    with session_factory() as db:
+        schedule = models.SourceSchedule(source="arxiv", enabled=True, interval_days=1)
+        db.add(schedule)
+        _set_next_due(schedule, now=now, succeeded=False, error=error)
+        db.commit()
+    with session_factory() as db:
+        schedule = db.get(models.SourceSchedule, "arxiv")
+        assert schedule.next_due_at == (now + expected_delay).replace(tzinfo=None)
+        assert schedule.last_success_at is None
+
+
 def test_source_update_only_enables_browser_challenge_when_explicit(
     app_client, monkeypatch
 ):

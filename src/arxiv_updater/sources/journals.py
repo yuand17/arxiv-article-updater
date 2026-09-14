@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from xml.sax import SAXParseException
 
 import feedparser
 import httpx
@@ -29,6 +30,7 @@ DOI_PATTERN = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 JOURNAL_REQUEST_ATTEMPTS = 3
 JOURNAL_RETRY_BASE_SECONDS = 1.0
 JOURNAL_MAX_RETRY_SECONDS = 10.0
+JOURNAL_ENRICHMENT_WARNING_PREFIX = "Optional enrichment: "
 BrowserFetcher = Callable[[str, Path, float], str]
 
 
@@ -177,6 +179,10 @@ def _entry_subjects(entry: dict) -> list[str]:
 
 def parse_journal_feed(content: str, journal: JournalFeed) -> list[PaperCandidate]:
     parsed = feedparser.parse(content)
+    if not parsed.version:
+        raise ValueError("Response is not a recognized RSS or Atom feed")
+    if isinstance(parsed.get("bozo_exception"), SAXParseException):
+        raise ValueError("Response is not a complete RSS or Atom feed")
     candidates: list[PaperCandidate] = []
     for entry in parsed.entries:
         title = _clean_html(str(entry.get("title") or ""))
@@ -309,10 +315,14 @@ class JournalAdapter(SourceAdapter):
             else float(settings.journal_browser_timeout_seconds)
         )
         self.errors: list[str] = []
+        self.warnings: list[str] = []
 
     def fetch(self, since: datetime | None = None) -> list[PaperCandidate]:
+        self.errors.clear()
+        self.warnings.clear()
         primary_candidates: list[PaperCandidate] = []
         enrichment_candidates: list[PaperCandidate] = []
+        successful_primary_feeds = 0
         has_primary_feed = any(journal.kind != "crossref" for journal in self.feeds)
         for journal in self.feeds:
             if journal.kind == "crossref":
@@ -321,6 +331,7 @@ class JournalAdapter(SourceAdapter):
                         journal,
                         since,
                         max_pages=1 if has_primary_feed else 100,
+                        optional=has_primary_feed,
                     )
                 )
                 continue
@@ -350,27 +361,36 @@ class JournalAdapter(SourceAdapter):
                             f"{journal.name} Chrome 真人验证未完成：{browser_exc}"
                         )
                         continue
-                    parsed_candidates = parse_journal_feed(content, journal)
-                    if not parsed_candidates:
+                    try:
+                        parsed_candidates = parse_journal_feed(content, journal)
+                    except ValueError:
                         self.errors.append(
                             f"{journal.name} Chrome 真人验证后未返回可识别的期刊条目"
                         )
                         continue
+                    successful_primary_feeds += 1
                     primary_candidates.extend(
                         self._filter_since(parsed_candidates, since)
                     )
                     continue
                 self.errors.append(_safe_request_error(journal, exc))
                 continue
-            primary_candidates.extend(
-                self._filter_since(parse_journal_feed(response.text, journal), since)
-            )
+            try:
+                parsed_candidates = parse_journal_feed(response.text, journal)
+            except ValueError:
+                self.errors.append(f"{journal.name} {journal.kind}: Invalid feed response")
+                continue
+            successful_primary_feeds += 1
+            primary_candidates.extend(self._filter_since(parsed_candidates, since))
         candidates = (
             _merge_enrichment(primary_candidates, enrichment_candidates)
             if has_primary_feed
             else _deduplicate_candidates(enrichment_candidates)
         )
-        if not candidates and self.errors:
+        # A valid feed with no new entries is still a successful source update.
+        # Crossref enrichment cannot rescue a failed official feed, and a failed
+        # standalone Crossref page must not advance the subscription checkpoint.
+        if self.errors and (not has_primary_feed or not successful_primary_feeds):
             raise RuntimeError("; ".join(self.errors))
         return candidates
 
@@ -394,16 +414,21 @@ class JournalAdapter(SourceAdapter):
         since: datetime | None,
         *,
         max_pages: int = 100,
+        optional: bool = False,
     ) -> list[PaperCandidate]:
         cursor = "*"
         results: list[PaperCandidate] = []
         for _page in range(max_pages):
             params: dict[str, str | int] = {
                 "rows": 100,
-                "cursor": cursor,
-                "sort": "published",
-                "order": "desc",
             }
+            # Crossref's August 2026 upgrade rejects publication-date sorting
+            # together with a cursor. Enrichment only needs one recent page;
+            # standalone sources use cursor pagination without that sorting.
+            if max_pages == 1:
+                params.update({"sort": "published", "order": "desc"})
+            else:
+                params["cursor"] = cursor
             if since:
                 params["filter"] = f"from-pub-date:{since.date().isoformat()}"
             try:
@@ -414,17 +439,28 @@ class JournalAdapter(SourceAdapter):
                     headers={"User-Agent": "arxiv-updater/0.2 (mailto:local@localhost)"},
                 )
                 payload = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                self.errors.append(_safe_request_error(journal, exc))
+                if (
+                    not isinstance(payload, dict)
+                    or not isinstance(payload.get("message"), dict)
+                    or not isinstance(payload["message"].get("items"), list)
+                ):
+                    raise ValueError("Invalid Crossref works response")
+                page = parse_crossref_works(payload, journal)
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+                issues = self.warnings if optional else self.errors
+                issues.append(_safe_request_error(journal, exc))
                 break
-            page = parse_crossref_works(payload, journal)
             results.extend(page)
             message = payload.get("message") or {}
             next_cursor = str(message.get("next-cursor") or "")
             if len(message.get("items") or []) < 100 or not next_cursor or next_cursor == cursor:
                 break
             cursor = next_cursor
-        return results
+        return sorted(
+            results,
+            key=lambda candidate: candidate.published_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
 
 
 def _candidate_key(candidate: PaperCandidate) -> str:

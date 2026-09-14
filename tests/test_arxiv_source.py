@@ -1,4 +1,5 @@
 import os
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -7,6 +8,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
+from arxiv_updater.arxiv_network import ArxivRequestGate
 from arxiv_updater.config import Settings
 from arxiv_updater.services.papers import (
     normalize_author_names,
@@ -15,11 +17,25 @@ from arxiv_updater.services.papers import (
     normalize_title,
     upsert_paper,
 )
-from arxiv_updater.sources.arxiv import ArxivAdapter, parse_arxiv_feed
+from arxiv_updater.sources.arxiv import (
+    ArxivAdapter,
+    ArxivAPIError,
+    ArxivResponseError,
+    parse_arxiv_feed,
+)
 from arxiv_updater.sources.base import PaperCandidate
 from arxiv_updater.sources.cache import DailyResponseCache
 
 FIXTURE = Path(__file__).parent / "fixtures" / "arxiv_feed.xml"
+
+
+@pytest.fixture(autouse=True)
+def isolated_arxiv_request_gate(monkeypatch):
+    gate = ArxivRequestGate(
+        clock=lambda: time.monotonic(),
+        sleep=lambda seconds: time.sleep(seconds),
+    )
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.get_arxiv_request_gate", lambda: gate)
 
 
 def test_parse_arxiv_feed():
@@ -38,6 +54,30 @@ def test_parse_respects_since():
         FIXTURE.read_text(encoding="utf-8"), datetime(2026, 7, 31, tzinfo=UTC)
     )
     assert papers == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<html><body>Temporarily unavailable</body></html>",
+        '<feed xmlns="http://www.w3.org/2005/Atom"><entry>',
+        '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Missing ID</title>'
+        "</entry></feed>",
+        FIXTURE.read_text(encoding="utf-8").replace("2026-07-29T10:00:00Z", "invalid"),
+    ],
+)
+def test_parse_arxiv_feed_rejects_invalid_upstream_content(content):
+    with pytest.raises(ArxivResponseError):
+        parse_arxiv_feed(content)
+
+
+def test_parse_arxiv_feed_reports_atom_api_error():
+    content = '''<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+        <id>http://arxiv.org/api/errors#incorrect_query</id><title>Error</title>
+        <summary>Invalid query syntax</summary></entry></feed>'''
+
+    with pytest.raises(ArxivAPIError, match="Invalid query syntax"):
+        parse_arxiv_feed(content)
 
 
 def test_normalization():
@@ -327,6 +367,156 @@ def test_daily_response_cache_can_expire_stale_arxiv_data(tmp_path):
     assert cache.get("page", max_age=timedelta(minutes=5)) is None
 
 
+@pytest.mark.parametrize(
+    "bad_content",
+    [
+        "<html><body>Service unavailable</body></html>",
+        '<feed xmlns="http://www.w3.org/2005/Atom"><entry>',
+        '<feed xmlns="http://www.w3.org/2005/Atom" '
+        'xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
+        "<opensearch:totalResults>5</opensearch:totalResults>"
+        "<opensearch:startIndex>0</opensearch:startIndex></feed>",
+    ],
+)
+def test_arxiv_adapter_retries_invalid_page_before_caching(
+    bad_content, tmp_path, monkeypatch
+):
+    calls = 0
+    cache = DailyResponseCache("arxiv-invalid-response", tmp_path)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert cache.get("cat:quant-ph|0|1") is None
+        return httpx.Response(
+            200,
+            text=bad_content if calls == 1 else FIXTURE.read_text(encoding="utf-8"),
+        )
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        cache=cache,
+    )
+
+    assert len(adapter.fetch()) == 1
+    assert calls == 2
+    assert cache.get("cat:quant-ph|0|1") == FIXTURE.read_text(encoding="utf-8")
+
+
+def test_arxiv_adapter_recovers_invalid_cache_from_previous_versions(tmp_path):
+    cache = DailyResponseCache("arxiv-old-invalid-cache", tmp_path)
+    cache.put("cat:quant-ph|0|1", "<html><body>Service unavailable</body></html>")
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text=FIXTURE.read_text(encoding="utf-8"))
+
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        cache=cache,
+    )
+
+    assert len(adapter.fetch()) == 1
+    assert calls == 1
+    assert cache.get("cat:quant-ph|0|1") == FIXTURE.read_text(encoding="utf-8")
+
+
+def test_arxiv_adapter_does_not_cache_or_report_success_for_persistent_bad_page(
+    tmp_path, monkeypatch
+):
+    cache = DailyResponseCache("arxiv-persistent-invalid", tmp_path)
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text="<html>Service unavailable</html>")
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        cache=cache,
+    )
+
+    with pytest.raises(ArxivResponseError):
+        adapter.fetch()
+
+    assert calls == 3
+    assert cache.get("cat:quant-ph|0|1") is None
+
+
+def test_arxiv_adapter_rejects_wrong_page_start_index(tmp_path, monkeypatch):
+    content = FIXTURE.read_text(encoding="utf-8").replace(
+        "</feed>",
+        '<opensearch:startIndex xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
+        "5</opensearch:startIndex></feed>",
+    )
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, text=content))
+        ),
+        max_results=1,
+        cache=DailyResponseCache("arxiv-wrong-start-index", tmp_path),
+    )
+
+    with pytest.raises(ArxivResponseError, match="unexpected start index"):
+        adapter.fetch()
+
+
+def test_arxiv_adapter_accepts_genuine_empty_results(tmp_path):
+    content = '''<feed xmlns="http://www.w3.org/2005/Atom"
+        xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+        <opensearch:totalResults>0</opensearch:totalResults>
+        <opensearch:startIndex>0</opensearch:startIndex></feed>'''
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, text=content))
+        ),
+        max_results=1,
+        cache=DailyResponseCache("arxiv-empty-results", tmp_path),
+    )
+
+    assert adapter.fetch() == []
+
+
+def test_arxiv_adapter_does_not_retry_or_cache_explicit_api_error(tmp_path):
+    calls = 0
+    cache = DailyResponseCache("arxiv-api-error", tmp_path)
+    content = '''<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+        <id>http://arxiv.org/api/errors#incorrect_query</id><title>Error</title>
+        <summary>Invalid query syntax</summary></entry></feed>'''
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text=content)
+
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        cache=cache,
+    )
+
+    with pytest.raises(ArxivAPIError):
+        adapter.fetch()
+
+    assert calls == 1
+    assert cache.get("cat:quant-ph|0|1") is None
+
+
 def test_arxiv_adapter_retries_rate_limit(tmp_path, monkeypatch):
     calls = 0
 
@@ -392,9 +582,9 @@ def test_arxiv_adapter_retries_transport_error_and_keeps_three_second_spacing(
 
 @pytest.mark.parametrize(
     ("status_code", "retry_after", "expected_delay"),
-    [(408, "7", 7.0), (503, "999", 30.0)],
+    [(408, "7", 7.0), (503, "15", 15.0)],
 )
-def test_arxiv_adapter_retries_transient_status_and_bounds_retry_after(
+def test_arxiv_adapter_retries_transient_status_and_respects_retry_after(
     status_code, retry_after, expected_delay, tmp_path, monkeypatch
 ):
     calls = 0
@@ -430,6 +620,31 @@ def test_arxiv_adapter_retries_transient_status_and_bounds_retry_after(
     assert calls == 2
     assert sleeps == [expected_delay]
     assert [paper.arxiv_id for paper in papers] == ["9999.99991"]
+
+
+@pytest.mark.parametrize("status_code", [429, 503])
+def test_arxiv_adapter_does_not_shorten_long_server_cooldown(
+    status_code, tmp_path, monkeypatch
+):
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status_code, headers={"Retry-After": "999"})
+
+    monkeypatch.setattr("arxiv_updater.sources.arxiv.time.sleep", lambda _seconds: None)
+    adapter = ArxivAdapter(
+        settings=Settings(arxiv_categories=["quant-ph"]),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        max_results=1,
+        cache=DailyResponseCache("arxiv-long-cooldown", tmp_path),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        adapter.fetch()
+
+    assert calls == 1
 
 
 def test_arxiv_adapter_does_not_retry_nontransient_403(tmp_path, monkeypatch):

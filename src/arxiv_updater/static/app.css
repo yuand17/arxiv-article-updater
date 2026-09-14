@@ -86,6 +86,7 @@ h1,h2,h3 { font-family:Georgia,"Noto Serif SC",serif; line-height:1.18; }.feed-h
 .toast p { margin:.18rem 0 0; color:var(--muted); font-size:.86rem; }
 .toast button { border:0; padding:0 .2rem; background:transparent; color:var(--muted); font-size:1.25rem; cursor:pointer; }
 @keyframes toast-in { from { transform:translateY(.5rem); opacity:0; } }
+.journal-copy small.source-warning { color:#795b07; }
 @media (max-width:760px) {
   .status-table { overflow:visible; }
   .status-table table { min-width:660px; }
